@@ -31,6 +31,7 @@ class WeasleyScraper:
         fmip_base = self.auth.fmip_base_url
         fmf_base = self.auth.fmf_base_url or fmip_base
         params = self.config.fmip_params
+        fmip_payload = self._fmip_client_context_payload()
 
         for attempt in (1, 2):
             session = self._make_session()
@@ -68,13 +69,16 @@ class WeasleyScraper:
             if friend_state == "ok" and friend_locations:
                 log.info("Using people locations from FMF service.")
                 return friend_locations
+            if friend_state == "ok":
+                log.info("FMF payload contained no usable people locations; falling back to FMIP.")
 
             # Step 1: initClient — establishes FMIP session, sets session cookie
             log.info("Calling initClient...")
-            init_resp = session.get(
+            init_resp = self._call_fmip_endpoint(
+                session,
                 f"{fmip_base}/fmipservice/client/web/initClient",
-                params=params,
-                timeout=15,
+                params,
+                fmip_payload,
             )
             log.info(f"initClient: {init_resp.status_code}")
 
@@ -97,10 +101,11 @@ class WeasleyScraper:
 
             # Step 2: refreshClient — returns full device/people blob
             log.info("Calling refreshClient...")
-            refresh_resp = session.get(
+            refresh_resp = self._call_fmip_endpoint(
+                session,
                 f"{fmip_base}/fmipservice/client/web/refreshClient",
-                params=params,
-                timeout=15,
+                params,
+                fmip_payload,
             )
             log.info(f"refreshClient: {refresh_resp.status_code}")
 
@@ -122,6 +127,23 @@ class WeasleyScraper:
                 return None
 
             payload = refresh_resp.json()
+            top_count = (
+                len(payload.get("content", []))
+                if isinstance(payload.get("content"), list)
+                else 0
+            )
+            server_ctx = payload.get("serverContext", {})
+            server_count = (
+                len(server_ctx.get("content", []))
+                if isinstance(server_ctx, dict)
+                and isinstance(server_ctx.get("content"), list)
+                else 0
+            )
+            log.info(
+                "refreshClient payload sizes: content=%d serverContext.content=%d",
+                top_count,
+                server_count,
+            )
             refresh_friend_locations = self._parse_friend_locations(payload)
             if refresh_friend_locations:
                 log.info("Using people locations found in refreshClient payload.")
@@ -141,6 +163,24 @@ class WeasleyScraper:
         session.cookies = jar
         session.headers.update(_browser_headers())
         return session
+
+    def _fmip_client_context_payload(self) -> dict:
+        return {
+            "clientContext": {
+                "fmly": True,
+                "shouldLocate": True,
+                "mapsActive": False,
+                "contextApp": "com.apple.mobileme.fmip1",
+            }
+        }
+
+    def _call_fmip_endpoint(
+        self, session: requests.Session, url: str, params: dict, payload: dict
+    ) -> requests.Response:
+        resp = session.post(url, params=params, json=payload, timeout=15)
+        if resp.status_code in (404, 405):
+            resp = session.get(url, params=params, timeout=15)
+        return resp
 
     def _fetch_friend_locations(
         self, session: requests.Session, base: str, params: dict
@@ -276,14 +316,15 @@ class WeasleyScraper:
             unmatched = sorted(set(configured_members.keys()) - matched_config_keys)
             if unmatched:
                 available = sorted(discovered_names) if discovered_names else []
-                log.warning(
+                log_fn = log.warning if not results else log.info
+                log_fn(
                     "Configured family_members entries not found in iCloud payload: "
                     f"{unmatched}. Available device names: {available}"
                 )
                 for wanted in unmatched:
                     suggestions = _top_name_suggestions(wanted, available)
                     if suggestions:
-                        log.warning(
+                        log_fn(
                             "Suggested matches for %r: %s",
                             wanted,
                             suggestions,
@@ -380,18 +421,22 @@ class WeasleyScraper:
             unmatched = sorted(set(configured_members.keys()) - matched_config_keys)
             if unmatched:
                 available = sorted(discovered_names) if discovered_names else []
-                log.warning(
-                    "Configured family_members entries not found in FMF payload: "
-                    f"{unmatched}. Available people names: {available}"
-                )
-                for wanted in unmatched:
-                    suggestions = _top_name_suggestions(wanted, available)
-                    if suggestions:
-                        log.warning(
-                            "Suggested FMF matches for %r: %s",
-                            wanted,
-                            suggestions,
-                        )
+                if available:
+                    log_fn = log.warning if not results else log.info
+                    log_fn(
+                        "Configured family_members entries not found in FMF payload: "
+                        f"{unmatched}. Available people names: {available}"
+                    )
+                    for wanted in unmatched:
+                        suggestions = _top_name_suggestions(wanted, available)
+                        if suggestions:
+                            log_fn(
+                                "Suggested FMF matches for %r: %s",
+                                wanted,
+                                suggestions,
+                            )
+                else:
+                    log.debug("FMF payload has no people names for configured-member matching.")
 
         return results
 
@@ -476,7 +521,7 @@ def _extract_server_context_entries(data: dict) -> list[dict]:
 
 def _log_server_context_devices(devices: list[dict]):
     if not devices:
-        log.info("serverContext.content/devices entries: 0")
+        log.debug("serverContext.content/devices entries: 0")
         return
 
     log.info("serverContext.content/devices entries: %d", len(devices))

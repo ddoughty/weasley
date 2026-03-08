@@ -30,7 +30,7 @@ class WeasleyTRMNL:
         whatever Liquid template you build for the TRMNL plugin.
         """
         if not self.config.trmnl_api_key or not self.config.trmnl_plugin_uuid:
-            log.warning("TRMNL not configured (missing api_key or plugin_uuid). Skipping push.")
+            log.info("TRMNL not configured (missing api_key or plugin_uuid). Skipping push.")
             return False
 
         payload = self._build_payload(locations)
