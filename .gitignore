@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+.venv/
+venv/
+env/
+pip-wheel-metadata/
+*.egg-info/
+
+# Test and tool caches
+.pytest_cache/
+.mypy_cache/
+
+# IntelliJ / JetBrains
+.idea/
+*.iml
+out/
+
+# Local runtime data
+session/
+config.json
+
+# Secrets
+.env
+.env.*
+!.env.example

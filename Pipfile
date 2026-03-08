@@ -1,0 +1,14 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+playwright = ">=1.40.0"
+requests = ">=2.31.0"
+
+[dev-packages]
+black = ">=24.10.0"
+
+[requires]
+python_version = "3.14.3"
