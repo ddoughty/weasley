@@ -68,6 +68,8 @@ python main.py auth
 
 A browser window will open. Log in to iCloud (including YubiKey if prompted).
 When you see the iCloud home screen, press Enter in the terminal.
+Weasley will then open iCloud Find; if Apple asks for your password again,
+complete that step and press Enter again when Find is fully loaded.
 
 The session is saved to `./session/` — this only needs to be repeated when
 the session expires (roughly monthly based on observed cookie lifetimes).

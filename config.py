@@ -7,10 +7,13 @@ Credentials/session identifiers are loaded from environment variables
 """
 
 import json
+import logging
 import os
 import uuid
 from dataclasses import dataclass, field
 from typing import ClassVar
+
+log = logging.getLogger("weasley.config")
 
 
 def _strip_optional_quotes(value: str) -> str:
@@ -47,6 +50,14 @@ def _load_dotenv(path: str) -> None:
 def _quote_env_value(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f"\"{escaped}\""
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return str(parsed) == value.lower()
 
 
 def _upsert_dotenv(path: str, key: str, value: str) -> None:
@@ -192,8 +203,12 @@ class Config:
                 setattr(self, field_name, env_value)
 
     def _ensure_client_id(self):
-        if self.client_id:
+        if self.client_id and _is_uuid(self.client_id):
             return
+        if self.client_id:
+            log.warning(
+                "WEASLEY_CLIENT_ID is not a UUID; generating a new UUID client_id."
+            )
         self.set_secret("client_id", str(uuid.uuid4()))
 
     @property

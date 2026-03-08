@@ -11,6 +11,8 @@ Subsequent runs: ensure_session() restores the saved session and verifies
 import json
 import logging
 import os
+import re
+from urllib.parse import urlparse
 import uuid
 from typing import Optional
 
@@ -21,6 +23,7 @@ from config import Config
 log = logging.getLogger("weasley.auth")
 
 ICLOUD_URL = "https://www.icloud.com"
+ICLOUD_FIND_URL = "https://www.icloud.com/find"
 VALIDATE_URL = "https://setup.icloud.com/setup/ws/1/validate"
 
 
@@ -29,6 +32,7 @@ class WeasleyAuth:
         self.config = config
         self._cookies: Optional[list] = None   # raw Playwright cookie list
         self._fmip_base_url: Optional[str] = None
+        self._fmf_base_url: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Public interface
@@ -67,12 +71,20 @@ class WeasleyAuth:
             # Wait for the user to complete login manually
             input("\n>>> Press Enter once you are logged in to iCloud... ")
 
+            # Prime Find My in the same browser context so FMIP session cookies
+            # are created before we persist cookies.
+            self._prime_findmy_cookie_in_context(context, interactive=True)
+
             # Grab cookies and save
             self._cookies = context.cookies()
             self._save_session(self._cookies)
 
             # Validate immediately and persist any refreshed session cookies.
             if not self._validate_session():
+                if self._salvage_session_without_validate():
+                    context.close()
+                    log.info("Interactive login complete. Session saved.")
+                    return True
                 log.warning(
                     "Could not validate authenticated session after login. "
                     "Re-run `python main.py auth` if `once` still returns 450."
@@ -84,6 +96,26 @@ class WeasleyAuth:
 
         log.info("Interactive login complete. Session saved.")
         return True
+
+    def refresh_session(self, reprime_fmip: bool = False) -> bool:
+        """
+        Refresh session metadata (cookies + FMIP URL) using validate.
+        Useful when FMIP returns 450 but cookies still look usable.
+        """
+        if not self._cookies:
+            if not self._load_cookies_from_disk():
+                return False
+        validated = self._validate_session()
+        if validated and (not reprime_fmip or self._has_cookie("X-APPLE-WEBAUTH-FMIP")):
+            return True
+
+        if reprime_fmip:
+            log.info(
+                "FMIP cookie missing or stale after validate; refreshing from iCloud Find."
+            )
+            if self._refresh_cookies_from_browser():
+                return self._validate_session()
+        return validated
 
     def get_cookies_for_requests(self) -> list[dict]:
         """Return cookies with metadata suitable for constructing a requests jar."""
@@ -97,6 +129,10 @@ class WeasleyAuth:
             raise RuntimeError("FMIP URL not known yet. Call ensure_session() first.")
         return self._fmip_base_url
 
+    @property
+    def fmf_base_url(self) -> Optional[str]:
+        return self._fmf_base_url
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -106,11 +142,37 @@ class WeasleyAuth:
 
     def _save_session(self, cookies: list):
         os.makedirs(self.config.session_dir, exist_ok=True)
+        payload = {"cookies": cookies}
+        if self._fmip_base_url:
+            payload["fmip_base_url"] = self._fmip_base_url
+        if self._fmf_base_url:
+            payload["fmf_base_url"] = self._fmf_base_url
         with open(self._session_file(), "w") as f:
-            json.dump({"cookies": cookies}, f, indent=2)
+            json.dump(payload, f, indent=2)
         log.info(f"Session saved to {self._session_file()}")
 
     def _load_saved_session(self) -> bool:
+        if not self._load_cookies_from_disk():
+            return False
+
+        # Fast-path: avoid validate on every run if we already have FMIP cookie
+        # + host metadata. This reduces auth churn/challenges from Apple.
+        if self._has_cookie("X-APPLE-WEBAUTH-FMIP"):
+            if self._fmip_base_url:
+                log.info("Loaded session from disk (cached FMIP metadata).")
+                return True
+            if self._extract_fmip_url_from_cookies():
+                log.info("Loaded session from disk (cookie-derived FMIP host).")
+                return True
+
+        if self._validate_session():
+            return True
+        if self._salvage_session_without_validate():
+            log.warning("Using saved session despite validate failure.")
+            return True
+        return False
+
+    def _load_cookies_from_disk(self) -> bool:
         path = self._session_file()
         if not os.path.exists(path):
             log.info("No saved session file found.")
@@ -120,6 +182,12 @@ class WeasleyAuth:
             data = json.load(f)
 
         self._cookies = data.get("cookies", [])
+        fmip_url = data.get("fmip_base_url")
+        if isinstance(fmip_url, str) and fmip_url:
+            self._fmip_base_url = fmip_url
+        fmf_url = data.get("fmf_base_url")
+        if isinstance(fmf_url, str) and fmf_url:
+            self._fmf_base_url = fmf_url
 
         # Quick sanity check: do we have any icloud cookies at all?
         icloud_cookies = [c for c in self._cookies if "icloud.com" in c.get("domain", "")]
@@ -127,8 +195,7 @@ class WeasleyAuth:
             log.warning("Saved session has no iCloud cookies.")
             return False
 
-        # Try to validate the session by hitting the validate endpoint
-        return self._validate_session()
+        return True
 
     def _validate_session(self) -> bool:
         """
@@ -143,26 +210,59 @@ class WeasleyAuth:
         session.cookies = jar
         session.headers.update(_browser_headers())
 
-        params = {
+        base_params = {
             "clientBuildNumber": self.config.client_build_number,
             "clientMasteringNumber": self.config.client_mastering_number,
-            "clientId": self.config.client_id,
             "requestId": str(uuid.uuid4()),
         }
-        if self.config.dsid:
-            params["dsid"] = self.config.dsid
+        variants = []
+        if self.config.client_id and self.config.dsid:
+            variants.append({**base_params, "clientId": self.config.client_id, "dsid": self.config.dsid})
+        if self.config.client_id:
+            variants.append({**base_params, "clientId": self.config.client_id})
+        variants.append(base_params)
 
-        try:
-            resp = session.post(VALIDATE_URL, params=params, timeout=15)
-        except Exception as e:
-            log.warning(f"validate request failed: {e}")
-            return False
+        resp = None
+        for idx, params in enumerate(variants, start=1):
+            try:
+                resp = session.post(VALIDATE_URL, params=params, timeout=15)
+            except Exception as e:
+                log.warning(f"validate request failed (attempt {idx}): {e}")
+                continue
 
-        if resp.status_code != 200:
-            log.warning(f"validate returned {resp.status_code} — session likely expired.")
+            if resp.status_code == 200:
+                break
+
+            body = (resp.text or "").replace("\n", " ")
+            if len(body) > 200:
+                body = body[:200] + "..."
+            log.warning(
+                "validate attempt %s returned %s (params: %s). Body: %s",
+                idx,
+                resp.status_code,
+                sorted(params.keys()),
+                body or "<empty>",
+            )
+
+        if not resp or resp.status_code != 200:
+            # In some accounts, validate can intermittently return 421 even when
+            # FMIP cookies/host are valid. Fall back to FMIP host from cookies.
+            if resp and resp.status_code == 421 and self._extract_fmip_url_from_cookies():
+                log.warning(
+                    "validate returned 421, falling back to FMIP host from cookies."
+                )
+                return True
+            log.warning(
+                "validate did not return 200 — Apple rejected trust validation "
+                "(session may still be valid)."
+            )
             return False
 
         self._update_cookies_from_session(session.cookies)
+        log.info(
+            "Validate succeeded; FMIP cookie present: %s",
+            "yes" if self._has_cookie("X-APPLE-WEBAUTH-FMIP") else "no",
+        )
 
         account = resp.json()
         dsid = account.get("dsInfo", {}).get("dsid", "")
@@ -173,8 +273,8 @@ class WeasleyAuth:
         if apple_id and apple_id != self.config.apple_id:
             self.config.set_secret("apple_id", apple_id)
             log.info(f"Captured apple_id: {apple_id}")
-        self._extract_fmip_url(account)
-        return bool(self._fmip_base_url)
+        self._extract_service_urls(account)
+        return bool(self._fmip_base_url or self._fmf_base_url)
 
     def _update_cookies_from_session(self, jar):
         refreshed = _cookiejar_to_dicts(jar)
@@ -185,15 +285,134 @@ class WeasleyAuth:
         self._cookies = refreshed
         self._save_session(self._cookies)
 
-    def _extract_fmip_url(self, account: dict):
-        """Pull the FMIP base URL out of a validate response blob."""
-        try:
-            url = account["webservices"]["findme"]["url"]
-            # Strip trailing port if present — requests handles it fine either way
-            self._fmip_base_url = url
-            log.info(f"FMIP base URL: {url}")
-        except KeyError:
+    def _extract_service_urls(self, account: dict):
+        """Pull FMIP/FMF base URLs out of a validate response blob."""
+        webservices = account.get("webservices", {})
+        if not isinstance(webservices, dict):
+            log.warning("Could not find webservices in validate response.")
+            return
+
+        fmip_url = _extract_url_from_webservices(webservices, "findme")
+        if fmip_url:
+            self._fmip_base_url = fmip_url
+            log.info(f"FMIP base URL: {fmip_url}")
+        else:
             log.warning("Could not find FMIP URL in validate response.")
+
+        fmf_url = _extract_fmf_url_from_webservices(webservices)
+        if fmf_url:
+            self._fmf_base_url = fmf_url
+            log.info(f"FMF base URL: {fmf_url}")
+
+    def _has_cookie(self, name: str) -> bool:
+        return any(cookie.get("name") == name for cookie in (self._cookies or []))
+
+    def _refresh_cookies_from_browser(self) -> bool:
+        """
+        Reopen the persisted browser profile and load iCloud Find to mint
+        FMIP auth cookies without forcing a full re-auth.
+        """
+        try:
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=self.config.session_dir,
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                self._prime_findmy_cookie_in_context(context, interactive=False)
+                self._cookies = context.cookies()
+                self._extract_fmip_url_from_cookies()
+                self._save_session(self._cookies)
+                context.close()
+                return True
+        except Exception as e:
+            log.warning(f"Could not refresh cookies from browser profile: {e}")
+            return False
+
+    def _prime_findmy_cookie_in_context(self, context, interactive: bool):
+        page = context.new_page()
+        try:
+            log.info("Opening iCloud Find to prime FMIP session cookies...")
+            page.goto(ICLOUD_FIND_URL, wait_until="domcontentloaded", timeout=60000)
+            self._extract_fmip_url_from_page_url(page.url)
+            if interactive:
+                log.info(
+                    "If prompted, re-enter your Apple password in the Find page."
+                )
+                input(
+                    ">>> Press Enter once iCloud Find is fully loaded (map/devices visible)... "
+                )
+            else:
+                page.wait_for_timeout(5000)
+            self._extract_fmip_url_from_page_url(page.url)
+            self._extract_fmip_url_from_page_resources(page)
+            current_url = page.url.lower()
+            if "signin" in current_url or "appleauth" in current_url:
+                log.warning("iCloud Find page is not authenticated in this browser profile.")
+        except Exception as e:
+            log.warning(f"Could not open iCloud Find in browser context: {e}")
+        finally:
+            page.close()
+
+    def _extract_fmip_url_from_cookies(self) -> bool:
+        domains = []
+        for cookie in self._cookies or []:
+            domain = cookie.get("domain", "")
+            if isinstance(domain, str):
+                domains.append(domain.lstrip("."))
+
+        for domain in sorted(set(domains)):
+            if re.search(r"^p\d+-fmipweb\.icloud\.com$", domain):
+                self._fmip_base_url = f"https://{domain}:443"
+                log.info(f"FMIP base URL (cookie-derived): {self._fmip_base_url}")
+                return True
+        return False
+
+    def _extract_fmip_url_from_page_url(self, page_url: str) -> bool:
+        if not page_url:
+            return False
+        parsed = urlparse(page_url)
+        host = (parsed.hostname or "").lower()
+        if re.search(r"^p\d+-fmipweb\.icloud\.com$", host):
+            self._fmip_base_url = f"https://{host}:443"
+            log.info(f"FMIP base URL (page-derived): {self._fmip_base_url}")
+            return True
+        return False
+
+    def _extract_fmip_url_from_page_resources(self, page) -> bool:
+        try:
+            resource_url = page.evaluate(
+                """
+                () => {
+                    const items = performance.getEntriesByType('resource').map(e => e.name || '');
+                    const hit = items.find((u) => /https:\\/\\/p\\d+-fmipweb\\.icloud\\.com/i.test(u));
+                    return hit || null;
+                }
+                """
+            )
+        except Exception:
+            return False
+
+        if not isinstance(resource_url, str) or not resource_url:
+            return False
+        return self._extract_fmip_url_from_page_url(resource_url)
+
+    def _salvage_session_without_validate(self) -> bool:
+        """
+        Allow progress when validate is blocked (e.g., 421 trust-token flow) but
+        Find/FMIP cookies are present and we can determine an FMIP host.
+        """
+        if not self._has_cookie("X-APPLE-WEBAUTH-FMIP"):
+            return False
+        if self._fmip_base_url:
+            self._save_session(self._cookies or [])
+            log.warning("Validate failed; proceeding with existing FMIP session metadata.")
+            return True
+        if self._extract_fmip_url_from_cookies():
+            self._save_session(self._cookies or [])
+            log.warning("Validate failed; proceeding with cookie-derived FMIP host.")
+            return True
+        return False
 
 
 def _browser_headers() -> dict:
@@ -211,6 +430,33 @@ def _browser_headers() -> dict:
     }
 
 
+def _extract_url_from_webservices(webservices: dict, key: str) -> Optional[str]:
+    service = webservices.get(key, {})
+    if isinstance(service, dict):
+        url = service.get("url")
+        if isinstance(url, str) and url:
+            return url
+    return None
+
+
+def _extract_fmf_url_from_webservices(webservices: dict) -> Optional[str]:
+    for key in ("fmf", "findfriends", "findmyfriends"):
+        url = _extract_url_from_webservices(webservices, key)
+        if url:
+            return url
+
+    for key, service in webservices.items():
+        if not isinstance(service, dict):
+            continue
+        url = service.get("url")
+        if not isinstance(url, str):
+            continue
+        key_norm = key.lower()
+        if "friend" in key_norm or "fmf" in key_norm or "/fmf" in url:
+            return url
+    return None
+
+
 def _cookies_to_jar(cookies: Optional[list[dict]]):
     from requests.cookies import RequestsCookieJar
 
@@ -226,6 +472,16 @@ def _cookies_to_jar(cookies: Optional[list[dict]]):
             domain=cookie.get("domain", ".icloud.com"),
             path=cookie.get("path", "/"),
         )
+        domain = cookie.get("domain", "")
+        if isinstance(domain, str) and "icloud.com" in domain and domain != ".icloud.com":
+            # FMIP endpoints are subdomains of icloud.com; keep a superdomain
+            # variant so auth cookies are available across setup/fmip hosts.
+            jar.set(
+                name,
+                value,
+                domain=".icloud.com",
+                path=cookie.get("path", "/"),
+            )
     return jar
 
 
