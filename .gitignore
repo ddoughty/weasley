@@ -26,6 +26,9 @@ out/
 # Local runtime data
 session/
 config.json
+*.db
+*.db-shm
+*.db-wal
 
 # Secrets
 .env

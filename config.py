@@ -117,6 +117,13 @@ class Config:
     trmnl_api_key: str = ""
     trmnl_plugin_uuid: str = ""     # your custom plugin UUID
 
+    # Reverse geocoding
+    amazon_places_api_key: str = ""
+    amazon_places_region: str = "us-east-1"
+    amazon_places_endpoint: str = ""
+    places_db_path: str = "./session/places.db"
+    places_cache_precision: int = 4
+
     # Polling
     poll_interval: int = 300        # seconds between refreshes (5 min default)
 
@@ -133,6 +140,7 @@ class Config:
         "client_id": "WEASLEY_CLIENT_ID",
         "trmnl_api_key": "WEASLEY_TRMNL_API_KEY",
         "trmnl_plugin_uuid": "WEASLEY_TRMNL_PLUGIN_UUID",
+        "amazon_places_api_key": "WEASLEY_AMAZON_PLACES_API_KEY",
     }
 
     @classmethod
@@ -173,6 +181,10 @@ class Config:
             "client_mastering_number": self.client_mastering_number,
             "session_dir": self.session_dir,
             "poll_interval": self.poll_interval,
+            "amazon_places_region": self.amazon_places_region,
+            "amazon_places_endpoint": self.amazon_places_endpoint,
+            "places_db_path": self.places_db_path,
+            "places_cache_precision": self.places_cache_precision,
             "family_members": self.family_members,
         }
         if include_secrets:
@@ -182,6 +194,7 @@ class Config:
                 "client_id": self.client_id,
                 "trmnl_api_key": self.trmnl_api_key,
                 "trmnl_plugin_uuid": self.trmnl_plugin_uuid,
+                "amazon_places_api_key": self.amazon_places_api_key,
             })
         return data
 

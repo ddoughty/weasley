@@ -12,6 +12,7 @@ from typing import Optional
 import requests
 
 from config import Config
+from geocoder import ReverseGeocoder
 
 log = logging.getLogger("weasley.trmnl")
 
@@ -21,6 +22,7 @@ TRMNL_WEBHOOK_URL = "https://usetrmnl.com/api/custom_plugins/{uuid}"
 class WeasleyTRMNL:
     def __init__(self, config: Config):
         self.config = config
+        self.geocoder = ReverseGeocoder(config)
 
     def push(self, locations: list[dict]) -> bool:
         """
@@ -74,9 +76,10 @@ class WeasleyTRMNL:
                 "battery_level": _format_battery(loc.get("battery_level")),
                 "battery_status": loc.get("battery_status"),
                 "last_seen": _format_timestamp(loc.get("timestamp")),
-                # TODO: reverse geocode lat/lon to a human-readable location name
-                # For now, raw coordinates. Add geocoding in a future pass.
-                "location_label": _format_coords(loc.get("lat"), loc.get("lon")),
+                "location_label": (
+                    loc.get("location_label")
+                    or self.geocoder.resolve_label(loc.get("lat"), loc.get("lon"))
+                ),
             })
 
         return {
@@ -107,10 +110,3 @@ def _format_timestamp(ts: Optional[int]) -> str:
         return dt.strftime("%I:%M %p")
     except Exception:
         return "Unknown"
-
-
-def _format_coords(lat: Optional[float], lon: Optional[float]) -> str:
-    if lat is None or lon is None:
-        return "Unknown"
-    # Placeholder — replace with reverse geocoding (e.g. geopy or nominatim)
-    return f"{lat:.4f}, {lon:.4f}"
