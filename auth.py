@@ -149,8 +149,10 @@ class WeasleyAuth:
             else:
                 log.warning("[refresh] tier-2: browser re-prime failed")
 
-        # --- Tier 3: automated re-login (placeholder) ---
-        # Will be implemented in weasley-06f once credential storage is in place.
+        # --- Tier 3: automated re-login with stored credentials ---
+        if self._attempt_automated_login():
+            self._log_cookie_inventory("post-tier3-login")
+            return True
 
         # --- Tier 4: give up ---
         self._log_cookie_inventory("post-refresh-exhausted")
@@ -437,6 +439,141 @@ class WeasleyAuth:
             self._fmip_base_url or "unset",
             self._fmf_base_url or "unset",
         )
+
+    def _attempt_automated_login(self) -> bool:
+        """
+        Tier 3: programmatically sign in to iCloud using stored credentials,
+        then prime FMIP cookies.  Requires credentials in macOS Keychain
+        (set up via ``python main.py store-credentials``).
+
+        Returns True if a usable session was established.
+        """
+        from credentials import get_credentials, has_credentials
+
+        if not has_credentials():
+            log.info("[tier-3] no stored credentials — skipping automated login")
+            return False
+
+        creds = get_credentials()
+        if creds is None:
+            return False
+        email, password = creds
+
+        log.info("[tier-3] attempting automated re-login for %s", email)
+        headless = not os.environ.get("WEASLEY_DEBUG_BROWSER")
+        success = False
+        try:
+            with sync_playwright() as p:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=self.config.session_dir,
+                    headless=headless,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                page = context.new_page()
+                page.goto(ICLOUD_URL, wait_until="domcontentloaded", timeout=60000)
+
+                # Detect whether we're on a sign-in page or already logged in
+                page.wait_for_timeout(3000)
+                current_url = page.url.lower()
+
+                if "signin" in current_url or "appleauth" in current_url:
+                    log.info("[tier-3] sign-in page detected — filling credentials")
+                    success = self._fill_sign_in_form(page, email, password)
+                else:
+                    # Already logged in — just need to re-prime FMIP
+                    log.info("[tier-3] already authenticated — re-priming FMIP cookies")
+                    success = True
+
+                if success:
+                    self._prime_findmy_cookie_in_context(context, interactive=False)
+                    self._cookies = context.cookies()
+                    self._fmip_cookie_ts = time.time()
+                    self._extract_fmip_url_from_cookies()
+                    self._save_session(self._cookies)
+
+                    if self._has_cookie("X-APPLE-WEBAUTH-FMIP"):
+                        log.info("[tier-3] automated login succeeded")
+                    else:
+                        log.warning(
+                            "[tier-3] login completed but FMIP cookie not obtained"
+                        )
+                        success = False
+
+                context.close()
+        except Exception as e:
+            log.warning("[tier-3] automated login failed: %s", e)
+            success = False
+        finally:
+            # Ensure password is cleared from local scope
+            del password
+            del creds
+
+        return success
+
+    def _fill_sign_in_form(self, page, email: str, password: str) -> bool:
+        """
+        Fill in the iCloud sign-in form.  Handles the common two-step flow
+        (email → password) and single-page forms.
+
+        Returns True if we appear to have reached the iCloud home/app screen.
+        """
+        try:
+            # iCloud sign-in may use an iframe
+            frame = page.frame(name="aid-auth-widget") or page
+            # Some sign-in pages show email first, then password
+            email_input = frame.locator(
+                'input[type="email"], input[name="appleId"], input#account_name_text_field'
+            )
+            if email_input.count() > 0:
+                email_input.first.fill(email)
+                # Look for a "Continue" / "Sign In" / arrow button
+                submit_btn = frame.locator(
+                    'button[type="submit"], #sign-in, .si-button'
+                )
+                if submit_btn.count() > 0:
+                    submit_btn.first.click()
+                    page.wait_for_timeout(3000)
+
+            # Now fill password
+            password_input = frame.locator(
+                'input[type="password"], input[name="password"]'
+            )
+            if password_input.count() > 0:
+                password_input.first.fill(password)
+                submit_btn = frame.locator(
+                    'button[type="submit"], #sign-in, .si-button'
+                )
+                if submit_btn.count() > 0:
+                    submit_btn.first.click()
+            else:
+                log.warning("[tier-3] could not find password field")
+                return False
+
+            # Wait for navigation away from sign-in
+            page.wait_for_timeout(8000)
+            final_url = page.url.lower()
+
+            if "signin" in final_url or "appleauth" in final_url:
+                # Check for 2FA prompt
+                if (
+                    "verify" in final_url
+                    or "twoFactorVerification" in page.content().lower()
+                ):
+                    log.warning(
+                        "[tier-3] 2FA verification required — cannot proceed automatically"
+                    )
+                else:
+                    log.warning(
+                        "[tier-3] still on sign-in page after submitting credentials"
+                    )
+                return False
+
+            log.info("[tier-3] sign-in form submitted, now at: %s", page.url)
+            return True
+
+        except Exception as e:
+            log.warning("[tier-3] error filling sign-in form: %s", e)
+            return False
 
     def _refresh_cookies_from_browser(self, max_attempts: int = 3) -> bool:
         """
