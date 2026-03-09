@@ -111,7 +111,7 @@ class WeasleyAuth:
 
           Tier 1 — validate endpoint (re-confirm session, refresh cookies)
           Tier 2 — headless browser re-prime of FMIP cookie
-          Tier 3 — (future) automated re-login with stored credentials
+          Tier 3 — automated re-login with stored credentials
           Tier 4 — give up; caller should fall back to interactive auth
         """
         log.info("[refresh] starting (reprime_fmip=%s)", reprime_fmip)
@@ -575,6 +575,65 @@ class WeasleyAuth:
             log.warning("[tier-3] error filling sign-in form: %s", e)
             return False
 
+    def _fill_credentials_on_find_page(self, page, context) -> bool:
+        """
+        When the Find page redirects to a sign-in form, attempt to fill
+        credentials from Keychain and re-authenticate.  This handles the
+        case where the main iCloud session is valid but the Find service
+        specifically requires re-login.
+
+        Returns True if credentials were filled and FMIP cookie obtained.
+        """
+        from credentials import get_credentials, has_credentials
+
+        if not has_credentials():
+            log.info(
+                "[prime-login] no stored credentials — cannot auto-login on Find page"
+            )
+            return False
+
+        creds = get_credentials()
+        if creds is None:
+            return False
+        email, password = creds
+
+        log.info("[prime-login] attempting credential fill on Find sign-in page")
+        try:
+            success = self._fill_sign_in_form(page, email, password)
+            if not success:
+                log.warning("[prime-login] credential fill failed")
+                return False
+
+            # After successful sign-in, poll for FMIP cookie
+            poll_interval_ms = 1000
+            max_wait_ms = 15000
+            elapsed = 0
+            while elapsed < max_wait_ms:
+                page.wait_for_timeout(poll_interval_ms)
+                elapsed += poll_interval_ms
+                if any(
+                    c.get("name") == "X-APPLE-WEBAUTH-FMIP" for c in context.cookies()
+                ):
+                    log.info(
+                        "[prime-login] FMIP cookie appeared after sign-in (%dms)",
+                        elapsed,
+                    )
+                    return True
+            log.warning(
+                "[prime-login] signed in but FMIP cookie did not appear within %dms",
+                max_wait_ms,
+            )
+            # Still return True if we navigated away from sign-in — cookies
+            # may have been set even if FMIP specifically wasn't detected
+            final_url = page.url.lower()
+            return "signin" not in final_url and "appleauth" not in final_url
+        except Exception as e:
+            log.warning("[prime-login] error during credential fill: %s", e)
+            return False
+        finally:
+            del password
+            del creds
+
     def _refresh_cookies_from_browser(self, max_attempts: int = 3) -> bool:
         """
         Reopen the persisted browser profile and load iCloud Find to mint
@@ -673,6 +732,11 @@ class WeasleyAuth:
                     "is not authenticated for Find.",
                     page.url,
                 )
+                if not interactive:
+                    # Attempt to fill credentials on the Find sign-in page
+                    if self._fill_credentials_on_find_page(page, context):
+                        self._extract_fmip_url_from_page_url(page.url)
+                        self._extract_fmip_url_from_page_resources(page)
         except Exception as e:
             log.warning(f"[prime] could not open iCloud Find in browser context: {e}")
         finally:
