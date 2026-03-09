@@ -16,7 +16,7 @@ from geocoder import ReverseGeocoder
 
 log = logging.getLogger("weasley.trmnl")
 
-TRMNL_WEBHOOK_URL = "https://usetrmnl.com/api/custom_plugins/{uuid}"
+TRMNL_WEBHOOK_URL = "https://trmnl.com/api/custom_plugins/{uuid}"
 
 
 class WeasleyTRMNL:
