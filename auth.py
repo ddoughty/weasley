@@ -106,8 +106,13 @@ class WeasleyAuth:
 
     def refresh_session(self, reprime_fmip: bool = False) -> bool:
         """
-        Refresh session metadata (cookies + FMIP URL) using validate.
-        Useful when FMIP returns 450 but cookies still look usable.
+        Multi-tier session refresh.  Each tier escalates only when the
+        previous tier fails:
+
+          Tier 1 — validate endpoint (re-confirm session, refresh cookies)
+          Tier 2 — headless browser re-prime of FMIP cookie
+          Tier 3 — (future) automated re-login with stored credentials
+          Tier 4 — give up; caller should fall back to interactive auth
         """
         log.info("[refresh] starting (reprime_fmip=%s)", reprime_fmip)
         if not self._cookies:
@@ -115,23 +120,41 @@ class WeasleyAuth:
                 log.warning("[refresh] no cookies on disk — cannot refresh")
                 return False
         self._log_cookie_inventory("pre-refresh")
+
+        # --- Tier 1: validate ---
         validated = self._validate_session()
-        log.info("[refresh] validate result: %s", validated)
+        log.info("[refresh] tier-1 validate result: %s", validated)
         if validated and (not reprime_fmip or self._has_cookie("X-APPLE-WEBAUTH-FMIP")):
-            self._log_cookie_inventory("post-refresh-ok")
+            self._log_cookie_inventory("post-tier1-ok")
             return True
 
+        # --- Tier 2: headless browser re-prime ---
         if reprime_fmip:
             log.info(
-                "[refresh] FMIP cookie missing or stale after validate; "
-                "refreshing from iCloud Find."
+                "[refresh] tier-2: FMIP cookie missing or stale after validate; "
+                "re-priming from iCloud Find."
             )
             if self._refresh_cookies_from_browser():
-                self._log_cookie_inventory("post-browser-reprime")
-                return self._validate_session()
+                self._log_cookie_inventory("post-tier2-reprime")
+                revalidated = self._validate_session()
+                if revalidated:
+                    return True
+                # validate may fail but FMIP cookie is fresh — allow it
+                if self._has_cookie("X-APPLE-WEBAUTH-FMIP") and self._fmip_base_url:
+                    log.warning(
+                        "[refresh] tier-2: validate failed after re-prime "
+                        "but FMIP cookie + URL present — proceeding"
+                    )
+                    return True
             else:
-                log.warning("[refresh] browser re-prime failed")
-        self._log_cookie_inventory("post-refresh-fallback")
+                log.warning("[refresh] tier-2: browser re-prime failed")
+
+        # --- Tier 3: automated re-login (placeholder) ---
+        # Will be implemented in weasley-06f once credential storage is in place.
+
+        # --- Tier 4: give up ---
+        self._log_cookie_inventory("post-refresh-exhausted")
+        log.warning("[refresh] all tiers exhausted")
         return validated
 
     def ensure_fresh_fmip(self) -> bool:
