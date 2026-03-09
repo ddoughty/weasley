@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "e2f68b353d43d1686235511ab4ddaa96bbdbfed131ddf7538192f22cbad4673e"
+            "sha256": "e1b2e3156f870db2d728ab6c343a4592b8335efc2093b0ddcbc58437657956b8"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -209,6 +209,47 @@
             ],
             "markers": "python_version >= '3.8'",
             "version": "==3.11"
+        },
+        "jaraco.classes": {
+            "hashes": [
+                "sha256:47a024b51d0239c0dd8c8540c6c7f484be3b8fcf0b2d85c13825780d3b3f3acd",
+                "sha256:f662826b6bed8cace05e7ff873ce0f9283b5c924470fe664fff1c2f00f581790"
+            ],
+            "markers": "python_version >= '3.8'",
+            "version": "==3.4.0"
+        },
+        "jaraco.context": {
+            "hashes": [
+                "sha256:0df6a0287258f3e364072c3e40d5411b20cafa30cb28c4839d24319cecf9f808",
+                "sha256:bc046b2dc94f1e5532bd02402684414575cc11f565d929b6563125deb0a6e581"
+            ],
+            "markers": "python_version >= '3.9'",
+            "version": "==6.1.1"
+        },
+        "jaraco.functools": {
+            "hashes": [
+                "sha256:9eec1e36f45c818d9bf307c8948eb03b2b56cd44087b3cdc989abca1f20b9176",
+                "sha256:da21933b0417b89515562656547a77b4931f98176eb173644c0d35032a33d6bb"
+            ],
+            "markers": "python_version >= '3.9'",
+            "version": "==4.4.0"
+        },
+        "keyring": {
+            "hashes": [
+                "sha256:be4a0b195f149690c166e850609a477c532ddbfbaed96a404d4e43f8d5e2689f",
+                "sha256:fe01bd85eb3f8fb3dd0405defdeac9a5b4f6f0439edbb3149577f244a2e8245b"
+            ],
+            "index": "pypi",
+            "markers": "python_version >= '3.9'",
+            "version": "==25.7.0"
+        },
+        "more-itertools": {
+            "hashes": [
+                "sha256:52d4362373dcf7c52546bc4af9a86ee7c4579df9a8dc268be0a2f949d376cc9b",
+                "sha256:f638ddf8a1a0d134181275fb5d58b086ead7c6a72429ad725c67503f13ba30bd"
+            ],
+            "markers": "python_version >= '3.9'",
+            "version": "==10.8.0"
         },
         "playwright": {
             "hashes": [

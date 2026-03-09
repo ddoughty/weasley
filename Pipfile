@@ -6,6 +6,7 @@ name = "pypi"
 [packages]
 playwright = ">=1.40.0"
 requests = ">=2.31.0"
+keyring = "*"
 
 [dev-packages]
 black = "*"

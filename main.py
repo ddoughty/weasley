@@ -89,11 +89,20 @@ def main():
     )
     parser.add_argument(
         "command",
-        choices=["once", "daemon", "auth", "place-add", "place-list", "place-remove"],
+        choices=[
+            "once",
+            "daemon",
+            "auth",
+            "store-credentials",
+            "place-add",
+            "place-list",
+            "place-remove",
+        ],
         help=(
             "once: fetch and push a single update; "
             "daemon: poll continuously; "
             "auth: run interactive browser login to set up session; "
+            "store-credentials: save iCloud credentials in macOS Keychain; "
             "place-add/place-list/place-remove: manage manual geocode labels"
         ),
     )
@@ -122,7 +131,12 @@ def main():
     config = Config.load(args.config, args.env)
     geocoder = ReverseGeocoder(config)
 
-    if args.command == "auth":
+    if args.command == "store-credentials":
+        from credentials import store_credentials
+
+        success = store_credentials()
+        sys.exit(0 if success else 1)
+    elif args.command == "auth":
         run_auth(config)
     elif args.command == "once":
         success = run_once(config)
