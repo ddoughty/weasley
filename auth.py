@@ -371,27 +371,48 @@ class WeasleyAuth:
             self._fmf_base_url or "unset",
         )
 
-    def _refresh_cookies_from_browser(self) -> bool:
+    def _refresh_cookies_from_browser(self, max_attempts: int = 3) -> bool:
         """
         Reopen the persisted browser profile and load iCloud Find to mint
         FMIP auth cookies without forcing a full re-auth.
+
+        Retries up to *max_attempts* times if the FMIP cookie is not minted.
         """
-        try:
-            with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=self.config.session_dir,
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
+        headless = not os.environ.get("WEASLEY_DEBUG_BROWSER")
+        for attempt in range(1, max_attempts + 1):
+            log.info(
+                "[refresh-browser] attempt %d/%d (headless=%s)",
+                attempt,
+                max_attempts,
+                headless,
+            )
+            try:
+                with sync_playwright() as p:
+                    context = p.chromium.launch_persistent_context(
+                        user_data_dir=self.config.session_dir,
+                        headless=headless,
+                        args=["--disable-blink-features=AutomationControlled"],
+                    )
+                    self._prime_findmy_cookie_in_context(context, interactive=False)
+                    self._cookies = context.cookies()
+                    self._extract_fmip_url_from_cookies()
+                    self._save_session(self._cookies)
+                    context.close()
+            except Exception as e:
+                log.warning("[refresh-browser] attempt %d failed: %s", attempt, e)
+                continue
+
+            if self._has_cookie("X-APPLE-WEBAUTH-FMIP"):
+                log.info(
+                    "[refresh-browser] FMIP cookie obtained on attempt %d", attempt
                 )
-                self._prime_findmy_cookie_in_context(context, interactive=False)
-                self._cookies = context.cookies()
-                self._extract_fmip_url_from_cookies()
-                self._save_session(self._cookies)
-                context.close()
                 return True
-        except Exception as e:
-            log.warning(f"Could not refresh cookies from browser profile: {e}")
-            return False
+            log.warning(
+                "[refresh-browser] attempt %d completed but FMIP cookie still absent",
+                attempt,
+            )
+        log.warning("[refresh-browser] all %d attempts exhausted", max_attempts)
+        return False
 
     def _prime_findmy_cookie_in_context(self, context, interactive: bool):
         # Snapshot cookies before priming to detect changes
@@ -418,7 +439,25 @@ class WeasleyAuth:
                     ">>> Press Enter once iCloud Find is fully loaded (map/devices visible)... "
                 )
             else:
-                page.wait_for_timeout(5000)
+                # Poll for FMIP cookie instead of a fixed wait — Apple's JS
+                # may take varying time to mint the cookie.
+                poll_interval_ms = 1000
+                max_wait_ms = 15000
+                elapsed = 0
+                while elapsed < max_wait_ms:
+                    page.wait_for_timeout(poll_interval_ms)
+                    elapsed += poll_interval_ms
+                    if any(
+                        c.get("name") == "X-APPLE-WEBAUTH-FMIP"
+                        for c in context.cookies()
+                    ):
+                        log.info("[prime] FMIP cookie appeared after %dms", elapsed)
+                        break
+                else:
+                    log.warning(
+                        "[prime] FMIP cookie did not appear within %dms",
+                        max_wait_ms,
+                    )
             self._extract_fmip_url_from_page_url(page.url)
             self._extract_fmip_url_from_page_resources(page)
             current_url = page.url.lower()
