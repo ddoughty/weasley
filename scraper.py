@@ -28,6 +28,7 @@ class WeasleyScraper:
           [{"name": "Molly", "location": "Home", "lat": ..., "lon": ..., "battery": ...}]
         Returns None on failure.
         """
+        self.auth._log_cookie_inventory("fetch-start")
         fmip_base = self.auth.fmip_base_url
         fmf_base = self.auth.fmf_base_url or fmip_base
         params = self.config.fmip_params
@@ -70,7 +71,9 @@ class WeasleyScraper:
                 log.info("Using people locations from FMF service.")
                 return friend_locations
             if friend_state == "ok":
-                log.info("FMF payload contained no usable people locations; falling back to FMIP.")
+                log.info(
+                    "FMF payload contained no usable people locations; falling back to FMIP."
+                )
 
             # Step 1: initClient — establishes FMIP session, sets session cookie
             log.info("Calling initClient...")
@@ -96,7 +99,9 @@ class WeasleyScraper:
                 return None
 
             if init_resp.status_code != 200:
-                log.error(f"initClient failed: {init_resp.status_code} {init_resp.text}")
+                log.error(
+                    f"initClient failed: {init_resp.status_code} {init_resp.text}"
+                )
                 return None
 
             # Step 2: refreshClient — returns full device/people blob
@@ -119,11 +124,15 @@ class WeasleyScraper:
                         fmf_base = self.auth.fmf_base_url or fmip_base
                         params = self.config.fmip_params
                         continue
-                log.error("refreshClient returned 450 — session needs re-authentication.")
+                log.error(
+                    "refreshClient returned 450 — session needs re-authentication."
+                )
                 return None
 
             if refresh_resp.status_code != 200:
-                log.error(f"refreshClient failed: {refresh_resp.status_code} {refresh_resp.text}")
+                log.error(
+                    f"refreshClient failed: {refresh_resp.status_code} {refresh_resp.text}"
+                )
                 return None
 
             payload = refresh_resp.json()
@@ -233,7 +242,9 @@ class WeasleyScraper:
         Returns one of {"ok", "retry", "error"}.
         """
         try:
-            resp = session.get("https://www.icloud.com/find/", timeout=20, allow_redirects=True)
+            resp = session.get(
+                "https://www.icloud.com/find/", timeout=20, allow_redirects=True
+            )
         except Exception as e:
             log.warning(f"Find page warmup request failed: {e}")
             return "error"
@@ -265,9 +276,11 @@ class WeasleyScraper:
         matched_config_keys: set[str] = set()
         discovered_names: set[str] = set()
 
-        normalized_config = {
-            _normalize_name(key): key for key in configured_members.keys()
-        } if configured_members else {}
+        normalized_config = (
+            {_normalize_name(key): key for key in configured_members.keys()}
+            if configured_members
+            else {}
+        )
 
         for device in devices:
             candidate_names = _candidate_names(device)
@@ -300,17 +313,19 @@ class WeasleyScraper:
                 log.info(f"No location for {device_name}, skipping.")
                 continue
 
-            results.append({
-                "name": display_name,
-                "device_name": device_name,
-                "lat": location.get("latitude"),
-                "lon": location.get("longitude"),
-                "accuracy": location.get("horizontalAccuracy"),
-                "timestamp": location.get("timeStamp"),
-                "battery_level": device.get("batteryLevel"),
-                "battery_status": device.get("batteryStatus"),
-                "location_raw": location,
-            })
+            results.append(
+                {
+                    "name": display_name,
+                    "device_name": device_name,
+                    "lat": location.get("latitude"),
+                    "lon": location.get("longitude"),
+                    "accuracy": location.get("horizontalAccuracy"),
+                    "timestamp": location.get("timeStamp"),
+                    "battery_level": device.get("batteryLevel"),
+                    "battery_status": device.get("batteryStatus"),
+                    "location_raw": location,
+                }
+            )
 
         if configured_members:
             unmatched = sorted(set(configured_members.keys()) - matched_config_keys)
@@ -341,9 +356,11 @@ class WeasleyScraper:
         matched_config_keys: set[str] = set()
         discovered_names: set[str] = set()
 
-        normalized_config = {
-            _normalize_name(key): key for key in configured_members.keys()
-        } if configured_members else {}
+        normalized_config = (
+            {_normalize_name(key): key for key in configured_members.keys()}
+            if configured_members
+            else {}
+        )
 
         details = data.get("contactDetails", [])
         details_by_id: dict[str, dict] = {}
@@ -394,28 +411,34 @@ class WeasleyScraper:
             else:
                 display_name = person_name
 
-            location_blob = loc.get("location") if isinstance(loc.get("location"), dict) else {}
+            location_blob = (
+                loc.get("location") if isinstance(loc.get("location"), dict) else {}
+            )
             lat = loc.get("latitude", location_blob.get("latitude"))
             lon = loc.get("longitude", location_blob.get("longitude"))
             if lat is None or lon is None:
                 continue
 
-            results.append({
-                "name": display_name,
-                "device_name": person_name,
-                "lat": lat,
-                "lon": lon,
-                "accuracy": loc.get("horizontalAccuracy", location_blob.get("horizontalAccuracy")),
-                "timestamp": (
-                    loc.get("locationTimestamp")
-                    or loc.get("timeStamp")
-                    or loc.get("timestamp")
-                    or location_blob.get("timeStamp")
-                ),
-                "battery_level": None,
-                "battery_status": None,
-                "location_raw": loc,
-            })
+            results.append(
+                {
+                    "name": display_name,
+                    "device_name": person_name,
+                    "lat": lat,
+                    "lon": lon,
+                    "accuracy": loc.get(
+                        "horizontalAccuracy", location_blob.get("horizontalAccuracy")
+                    ),
+                    "timestamp": (
+                        loc.get("locationTimestamp")
+                        or loc.get("timeStamp")
+                        or loc.get("timestamp")
+                        or location_blob.get("timeStamp")
+                    ),
+                    "battery_level": None,
+                    "battery_status": None,
+                    "location_raw": loc,
+                }
+            )
 
         if configured_members:
             unmatched = sorted(set(configured_members.keys()) - matched_config_keys)
@@ -436,7 +459,9 @@ class WeasleyScraper:
                                 suggestions,
                             )
                 else:
-                    log.debug("FMF payload has no people names for configured-member matching.")
+                    log.debug(
+                        "FMF payload has no people names for configured-member matching."
+                    )
 
         return results
 
@@ -582,7 +607,9 @@ def _normalize_name(value: str) -> str:
     return normalized
 
 
-def _top_name_suggestions(wanted: str, available: list[str], limit: int = 5) -> list[str]:
+def _top_name_suggestions(
+    wanted: str, available: list[str], limit: int = 5
+) -> list[str]:
     if not wanted or not available:
         return []
 
