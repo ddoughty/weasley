@@ -28,12 +28,16 @@ ICLOUD_FIND_URL = "https://www.icloud.com/find"
 VALIDATE_URL = "https://setup.icloud.com/setup/ws/1/validate"
 
 
+FMIP_COOKIE_MAX_AGE_SECS = 25 * 60  # 25 minutes — re-prime before likely expiry
+
+
 class WeasleyAuth:
     def __init__(self, config: Config):
         self.config = config
         self._cookies: Optional[list] = None  # raw Playwright cookie list
         self._fmip_base_url: Optional[str] = None
         self._fmf_base_url: Optional[str] = None
+        self._fmip_cookie_ts: Optional[float] = None  # epoch when FMIP cookie last set
 
     # ------------------------------------------------------------------
     # Public interface
@@ -130,6 +134,31 @@ class WeasleyAuth:
         self._log_cookie_inventory("post-refresh-fallback")
         return validated
 
+    def ensure_fresh_fmip(self) -> bool:
+        """
+        Proactively re-prime the FMIP cookie if it is older than the
+        configured max age, avoiding 450 errors on the next API call.
+        Returns True if the FMIP cookie is (now) present.
+        """
+        if not self._has_cookie("X-APPLE-WEBAUTH-FMIP"):
+            log.info("[fresh-fmip] no FMIP cookie — attempting re-prime")
+            return self._refresh_cookies_from_browser()
+
+        age = self._fmip_cookie_age_secs()
+        if age is not None and age > FMIP_COOKIE_MAX_AGE_SECS:
+            log.info(
+                "[fresh-fmip] FMIP cookie is %.0fs old (max %ds) — re-priming",
+                age,
+                FMIP_COOKIE_MAX_AGE_SECS,
+            )
+            return self._refresh_cookies_from_browser()
+
+        if age is not None:
+            log.info("[fresh-fmip] FMIP cookie age %.0fs — still fresh", age)
+        else:
+            log.info("[fresh-fmip] FMIP cookie present (age unknown)")
+        return True
+
     def get_cookies_for_requests(self) -> list[dict]:
         """Return cookies with metadata suitable for constructing a requests jar."""
         if not self._cookies:
@@ -155,11 +184,17 @@ class WeasleyAuth:
 
     def _save_session(self, cookies: list):
         os.makedirs(self.config.session_dir, exist_ok=True)
+        # Record when FMIP cookie was last obtained
+        if self._has_cookie("X-APPLE-WEBAUTH-FMIP"):
+            if self._fmip_cookie_ts is None:
+                self._fmip_cookie_ts = time.time()
         payload = {"cookies": cookies}
         if self._fmip_base_url:
             payload["fmip_base_url"] = self._fmip_base_url
         if self._fmf_base_url:
             payload["fmf_base_url"] = self._fmf_base_url
+        if self._fmip_cookie_ts:
+            payload["fmip_cookie_ts"] = self._fmip_cookie_ts
         with open(self._session_file(), "w") as f:
             json.dump(payload, f, indent=2)
         log.info(f"Session saved to {self._session_file()}")
@@ -201,6 +236,9 @@ class WeasleyAuth:
         fmf_url = data.get("fmf_base_url")
         if isinstance(fmf_url, str) and fmf_url:
             self._fmf_base_url = fmf_url
+        fmip_ts = data.get("fmip_cookie_ts")
+        if isinstance(fmip_ts, (int, float)) and fmip_ts > 0:
+            self._fmip_cookie_ts = float(fmip_ts)
 
         # Quick sanity check: do we have any icloud cookies at all?
         icloud_cookies = [
@@ -332,6 +370,12 @@ class WeasleyAuth:
     def _has_cookie(self, name: str) -> bool:
         return any(cookie.get("name") == name for cookie in (self._cookies or []))
 
+    def _fmip_cookie_age_secs(self) -> Optional[float]:
+        """Seconds since FMIP cookie was last saved, or None if unknown."""
+        if self._fmip_cookie_ts is None:
+            return None
+        return time.time() - self._fmip_cookie_ts
+
     def _log_cookie_inventory(self, label: str = "current"):
         """Log which auth-critical cookies are present and session file age."""
         key_cookies = [
@@ -403,6 +447,8 @@ class WeasleyAuth:
                 continue
 
             if self._has_cookie("X-APPLE-WEBAUTH-FMIP"):
+                self._fmip_cookie_ts = time.time()
+                self._save_session(self._cookies)
                 log.info(
                     "[refresh-browser] FMIP cookie obtained on attempt %d", attempt
                 )

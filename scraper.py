@@ -29,6 +29,7 @@ class WeasleyScraper:
         Returns None on failure.
         """
         self.auth._log_cookie_inventory("fetch-start")
+        self.auth.ensure_fresh_fmip()
         fmip_base = self.auth.fmip_base_url
         fmf_base = self.auth.fmf_base_url or fmip_base
         params = self.config.fmip_params
