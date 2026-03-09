@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "weasley",
+  "project_id": "3d36fa11-cd1d-4b18-aff8-dd09b9683087"
+}

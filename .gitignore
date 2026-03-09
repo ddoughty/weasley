@@ -34,3 +34,6 @@ config.json
 .env
 .env.*
 !.env.example
+
+# Dolt database files (added by bd init)
+.dolt/
