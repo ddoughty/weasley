@@ -472,11 +472,17 @@ class WeasleyAuth:
                 page = context.new_page()
                 page.goto(ICLOUD_URL, wait_until="domcontentloaded", timeout=60000)
 
-                # Detect whether we're on a sign-in page or already logged in
+                # Detect whether we're on a sign-in page or already logged in.
+                # Check both URL and DOM — iCloud may embed sign-in in an
+                # iframe without changing the URL.
                 page.wait_for_timeout(3000)
                 current_url = page.url.lower()
 
-                if "signin" in current_url or "appleauth" in current_url:
+                if (
+                    "signin" in current_url
+                    or "appleauth" in current_url
+                    or self._page_has_sign_in_form(page)
+                ):
                     log.info("[tier-3] sign-in page detected — filling credentials")
                     success = self._fill_sign_in_form(page, email, password)
                 else:
@@ -510,6 +516,53 @@ class WeasleyAuth:
 
         return success
 
+    def _page_has_sign_in_form(self, page) -> bool:
+        """
+        Detect whether the current page contains a sign-in form, either
+        directly in the page or embedded in the Apple auth iframe.
+        Works even when the URL doesn't change (e.g. iCloud Find embeds
+        the sign-in in an iframe at the same /find URL).
+        """
+        try:
+            # Primary check: the auth widget iframe or its container exist
+            # in the outer DOM.  The iframe itself is cross-origin
+            # (idmsa.apple.com) so we cannot inspect its inner DOM, but
+            # its mere presence on the page means Apple is asking for
+            # credentials.
+            auth_iframe = page.locator(
+                'iframe#aid-auth-widget-iFrame, iframe[name="aid-auth-widget"]'
+            )
+            if auth_iframe.count() > 0:
+                return True
+
+            # Secondary: outer-page markers Apple wraps around the iframe
+            auth_widget = page.locator(
+                "div.auth-widget, div.sign-in-label, "
+                "div.auth-widget-container"
+            )
+            if auth_widget.count() > 0:
+                return True
+
+            # Tertiary: fully logged-out landing page with a standalone
+            # "Sign In" button (no iframe, no auth widget — just a CTA)
+            sign_in_btn = page.locator('button:has-text("Sign In")')
+            if sign_in_btn.count() > 0:
+                return True
+
+            # Quaternary: check for inline email/password inputs (no iframe)
+            email_input = page.locator(
+                'input[type="email"], input[name="appleId"], '
+                "input#account_name_text_field"
+            )
+            password_input = page.locator(
+                'input[type="password"], input[name="password"]'
+            )
+            if email_input.count() > 0 or password_input.count() > 0:
+                return True
+        except Exception:
+            pass
+        return False
+
     def _fill_sign_in_form(self, page, email: str, password: str) -> bool:
         """
         Fill in the iCloud sign-in form.  Handles the common two-step flow
@@ -518,54 +571,89 @@ class WeasleyAuth:
         Returns True if we appear to have reached the iCloud home/app screen.
         """
         try:
-            # iCloud sign-in may use an iframe
+            # iCloud sign-in may use an iframe; wait for it to be available
             frame = page.frame(name="aid-auth-widget") or page
-            # Some sign-in pages show email first, then password
-            email_input = frame.locator(
-                'input[type="email"], input[name="appleId"], input#account_name_text_field'
-            )
-            if email_input.count() > 0:
-                email_input.first.fill(email)
-                # Look for a "Continue" / "Sign In" / arrow button
-                submit_btn = frame.locator(
-                    'button[type="submit"], #sign-in, .si-button'
-                )
-                if submit_btn.count() > 0:
-                    submit_btn.first.click()
-                    page.wait_for_timeout(3000)
 
-            # Now fill password
-            password_input = frame.locator(
-                'input[type="password"], input[name="password"]'
-            )
+            # Wait for the iframe content to actually render its inputs
+            # (the iframe is cross-origin so its DOM loads asynchronously)
+            email_sel = 'input[type="email"], input[name="appleId"], input#account_name_text_field'
+            password_sel = 'input[type="password"], input[name="password"]'
+            try:
+                frame.wait_for_selector(email_sel, timeout=10000)
+            except Exception:
+                # Email field may not appear if Apple already knows the account
+                log.info("[tier-3] email field did not appear, checking for password field")
+
+            # Some sign-in pages show email first, then password.
+            # Apple may pre-fill and mark the email field readonly when
+            # it already knows the account — skip filling in that case.
+            email_input = frame.locator(email_sel)
+            if email_input.count() > 0:
+                is_readonly = email_input.first.get_attribute("readonly") is not None
+                if is_readonly:
+                    log.info(
+                        "[tier-3] email field is readonly (pre-filled) — skipping to password"
+                    )
+                else:
+                    email_input.first.fill(email)
+                    # Look for a "Continue" / "Sign In" / arrow button
+                    submit_btn = frame.locator(
+                        'button[type="submit"], #sign-in, .si-button'
+                    )
+                    if submit_btn.count() > 0:
+                        submit_btn.first.click()
+                        page.wait_for_timeout(3000)
+
+            # Apple's sign-in iframe has overlapping elements that intercept
+            # pointer events, so we must use force=True for all interactions.
+
+            # Now fill password — wait for it to appear after email submission
+            try:
+                frame.wait_for_selector(password_sel, timeout=10000)
+            except Exception:
+                log.warning("[tier-3] password field did not appear within 10s")
+                return False
+
+            password_input = frame.locator(password_sel)
             if password_input.count() > 0:
-                password_input.first.fill(password)
-                submit_btn = frame.locator(
-                    'button[type="submit"], #sign-in, .si-button'
-                )
-                if submit_btn.count() > 0:
-                    submit_btn.first.click()
+                # Click the password field to focus it, type the password
+                # character by character (fires proper JS input events).
+                password_input.first.click(force=True)
+                page.wait_for_timeout(500)
+                password_input.first.press_sequentially(password, delay=50)
+                log.info("[tier-3] password typed")
+                # Apple's JS moves focus to the passkey button after typing.
+                # Press Enter (which goes nowhere), wait, re-focus the
+                # password field, then press Enter again to actually submit.
+                password_input.first.press("Enter")
+                page.wait_for_timeout(1000)
+                password_input.first.click(force=True)
+                page.wait_for_timeout(500)
+                password_input.first.press("Enter")
+                log.info("[tier-3] submitted password form")
             else:
                 log.warning("[tier-3] could not find password field")
                 return False
 
-            # Wait for navigation away from sign-in
-            page.wait_for_timeout(8000)
-            final_url = page.url.lower()
+            # Wait for the auth widget iframe to disappear (sign-in complete)
+            # or for an error/2FA state.  The page URL stays at /find/ the
+            # whole time since sign-in happens inside a cross-origin iframe.
+            auth_iframe_sel = 'iframe#aid-auth-widget-iFrame, iframe[name="aid-auth-widget"]'
+            try:
+                page.wait_for_selector(
+                    auth_iframe_sel, state="detached", timeout=15000
+                )
+                log.info("[tier-3] auth iframe disappeared — sign-in succeeded")
+                return True
+            except Exception:
+                pass
 
-            if "signin" in final_url or "appleauth" in final_url:
-                # Check for 2FA prompt
-                if (
-                    "verify" in final_url
-                    or "twoFactorVerification" in page.content().lower()
-                ):
-                    log.warning(
-                        "[tier-3] 2FA verification required — cannot proceed automatically"
-                    )
-                else:
-                    log.warning(
-                        "[tier-3] still on sign-in page after submitting credentials"
-                    )
+            # Iframe still present — check if it's a 2FA challenge or failure
+            if self._page_has_sign_in_form(page):
+                log.warning(
+                    "[tier-3] sign-in form still present after submitting — "
+                    "credentials may be wrong or 2FA required"
+                )
                 return False
 
             log.info("[tier-3] sign-in form submitted, now at: %s", page.url)
@@ -599,6 +687,28 @@ class WeasleyAuth:
 
         log.info("[prime-login] attempting credential fill on Find sign-in page")
         try:
+            # Fully logged-out landing page: no iframe yet, just a "Sign In"
+            # button.  Click it to trigger the auth widget / redirect.
+            auth_iframe = page.locator(
+                'iframe#aid-auth-widget-iFrame, iframe[name="aid-auth-widget"]'
+            )
+            if auth_iframe.count() == 0:
+                landing_btn = page.locator('button:has-text("Sign In")')
+                if landing_btn.count() > 0:
+                    log.info("[prime-login] clicking landing-page Sign In button")
+                    landing_btn.first.click()
+                    # Wait for the auth iframe or a redirect to appear
+                    try:
+                        page.wait_for_selector(
+                            'iframe#aid-auth-widget-iFrame, '
+                            'iframe[name="aid-auth-widget"]',
+                            timeout=10000,
+                        )
+                        log.info("[prime-login] auth iframe appeared after clicking Sign In")
+                    except Exception:
+                        log.warning("[prime-login] auth iframe did not appear after clicking Sign In")
+                        # May have redirected to idmsa.apple.com — continue anyway
+
             success = self._fill_sign_in_form(page, email, password)
             if not success:
                 log.warning("[prime-login] credential fill failed")
@@ -698,14 +808,44 @@ class WeasleyAuth:
             page.goto(ICLOUD_FIND_URL, wait_until="domcontentloaded", timeout=60000)
             log.info("[prime] page loaded — url: %s", page.url)
             self._extract_fmip_url_from_page_url(page.url)
-            if interactive:
+
+            # Wait briefly for JS to render, then check for sign-in form
+            page.wait_for_timeout(2000)
+
+            # Detect sign-in by checking the DOM, not just the URL.
+            # iCloud Find often embeds sign-in in an iframe without
+            # changing the URL from /find.
+            current_url = page.url.lower()
+            sign_in_detected = (
+                "signin" in current_url
+                or "appleauth" in current_url
+                or self._page_has_sign_in_form(page)
+            )
+
+            if sign_in_detected:
+                log.warning(
+                    "[prime] sign-in form detected on Find page (%s)",
+                    page.url,
+                )
+                if not interactive:
+                    if self._fill_credentials_on_find_page(page, context):
+                        self._extract_fmip_url_from_page_url(page.url)
+                        self._extract_fmip_url_from_page_resources(page)
+                else:
+                    log.info(
+                        "If prompted, re-enter your Apple password in the Find page."
+                    )
+                    input(
+                        ">>> Press Enter once iCloud Find is fully loaded (map/devices visible)... "
+                    )
+            elif interactive:
                 log.info("If prompted, re-enter your Apple password in the Find page.")
                 input(
                     ">>> Press Enter once iCloud Find is fully loaded (map/devices visible)... "
                 )
             else:
-                # Poll for FMIP cookie instead of a fixed wait — Apple's JS
-                # may take varying time to mint the cookie.
+                # No sign-in form — poll for FMIP cookie instead of a fixed
+                # wait; Apple's JS may take varying time to mint the cookie.
                 poll_interval_ms = 1000
                 max_wait_ms = 15000
                 elapsed = 0
@@ -725,18 +865,6 @@ class WeasleyAuth:
                     )
             self._extract_fmip_url_from_page_url(page.url)
             self._extract_fmip_url_from_page_resources(page)
-            current_url = page.url.lower()
-            if "signin" in current_url or "appleauth" in current_url:
-                log.warning(
-                    "[prime] landed on sign-in page (%s) — browser profile "
-                    "is not authenticated for Find.",
-                    page.url,
-                )
-                if not interactive:
-                    # Attempt to fill credentials on the Find sign-in page
-                    if self._fill_credentials_on_find_page(page, context):
-                        self._extract_fmip_url_from_page_url(page.url)
-                        self._extract_fmip_url_from_page_resources(page)
         except Exception as e:
             log.warning(f"[prime] could not open iCloud Find in browser context: {e}")
         finally:
