@@ -7,6 +7,7 @@ Polls Apple's Find My via iCloud web and pushes locations to a TRMNL display.
 import argparse
 import logging
 import sys
+import random
 import time
 
 from config import Config
@@ -67,8 +68,10 @@ def run_daemon(config: Config):
             run_once(config)
         except Exception as e:
             log.error(f"Unexpected error: {e}", exc_info=True)
-        log.info(f"Sleeping {config.poll_interval}s...")
-        time.sleep(config.poll_interval)
+        jitter = random.uniform(-1/6, 1/6)
+        sleep_time = int(config.poll_interval * (1 + jitter))
+        log.info(f"Sleeping {sleep_time}s (base {config.poll_interval}s ± jitter)...")
+        time.sleep(sleep_time)
 
 
 def run_auth(config: Config):
