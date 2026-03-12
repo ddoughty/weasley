@@ -83,6 +83,29 @@ python main.py place-remove --name "Home"
 python main.py place-remove --id 1
 ```
 
+#### Per-user place overrides
+
+Places can be scoped to a specific family member with `--user`. This lets the
+same coordinates show different names depending on who is there.
+
+```bash
+# Global place — everyone sees "Jeremy's House"
+python main.py place-add --name "Jeremy's House" --lat 42.0 --lon -71.0 --radius 200
+
+# Jeremy sees "Home" instead (per-user override takes priority over global)
+python main.py place-add --name Home --lat 42.0 --lon -71.0 --radius 200 --user Jeremy
+
+# Jeremy-only place with no global equivalent — others see "Jeremy's Work"
+python main.py place-add --name Work --lat 42.1 --lon -71.1 --radius 200 --user Jeremy
+```
+
+Resolution order when displaying a location for a given person:
+
+1. **Per-user match** for that person — name as-is (e.g. Jeremy sees "Home")
+2. **Global match** — name as-is (e.g. Dennis sees "Jeremy's House")
+3. **Another user's place** — auto-prefixed (e.g. Dennis sees "Jeremy's Work")
+4. Cached API result → Amazon Places API → raw coordinates
+
 ### 5. Authenticate
 
 ```bash

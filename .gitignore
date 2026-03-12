@@ -34,3 +34,8 @@ config.json
 .env
 .env.*
 !.env.example
+*.keychain-db
+*.keychain
+
+# Dolt database files (added by bd init)
+.dolt/

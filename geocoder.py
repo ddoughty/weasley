@@ -28,11 +28,16 @@ class ReverseGeocoder:
         self.db_path = os.path.abspath(config.places_db_path)
         self._ensure_db()
 
-    def resolve_label(self, lat: Optional[float], lon: Optional[float]) -> str:
+    def resolve_label(
+        self,
+        lat: Optional[float],
+        lon: Optional[float],
+        for_user: Optional[str] = None,
+    ) -> str:
         if lat is None or lon is None:
             return "Unknown"
 
-        manual = self._lookup_manual(lat, lon)
+        manual = self._lookup_manual(lat, lon, for_user)
         if manual:
             return manual
 
@@ -47,31 +52,37 @@ class ReverseGeocoder:
 
         return f"{lat:.4f}, {lon:.4f}"
 
-    def add_manual_place(self, name: str, lat: float, lon: float, radius_m: float) -> int:
+    def add_manual_place(
+        self,
+        name: str,
+        lat: float,
+        lon: float,
+        radius_m: float,
+        user: Optional[str] = None,
+    ) -> int:
         if not name.strip():
             raise ValueError("name must not be empty")
         if radius_m <= 0:
             raise ValueError("radius_m must be > 0")
 
+        user_val = user.strip() if user else None
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO manual_places (name, lat, lon, radius_m)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO manual_places (name, lat, lon, radius_m, user)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (name.strip(), float(lat), float(lon), float(radius_m)),
+                (name.strip(), float(lat), float(lon), float(radius_m), user_val),
             )
             return int(cur.lastrowid)
 
     def list_manual_places(self) -> list[dict]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, name, lat, lon, radius_m, created_at
+            rows = conn.execute("""
+                SELECT id, name, lat, lon, radius_m, user, created_at
                 FROM manual_places
                 ORDER BY name, id
-                """
-            ).fetchall()
+                """).fetchall()
 
         return [
             {
@@ -80,20 +91,27 @@ class ReverseGeocoder:
                 "lat": row["lat"],
                 "lon": row["lon"],
                 "radius_m": row["radius_m"],
+                "user": row["user"],
                 "created_at": row["created_at"],
             }
             for row in rows
         ]
 
-    def remove_manual_place(self, place_id: Optional[int] = None, name: Optional[str] = None) -> int:
+    def remove_manual_place(
+        self, place_id: Optional[int] = None, name: Optional[str] = None
+    ) -> int:
         if place_id is None and not name:
             raise ValueError("provide place_id or name")
 
         with self._connect() as conn:
             if place_id is not None:
-                cur = conn.execute("DELETE FROM manual_places WHERE id = ?", (int(place_id),))
+                cur = conn.execute(
+                    "DELETE FROM manual_places WHERE id = ?", (int(place_id),)
+                )
             else:
-                cur = conn.execute("DELETE FROM manual_places WHERE name = ?", (name.strip(),))
+                cur = conn.execute(
+                    "DELETE FROM manual_places WHERE name = ?", (name.strip(),)
+                )
             return int(cur.rowcount)
 
     def _ensure_db(self):
@@ -102,8 +120,7 @@ class ReverseGeocoder:
             os.makedirs(db_dir, exist_ok=True)
 
         with self._connect() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS manual_places (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
@@ -112,10 +129,8 @@ class ReverseGeocoder:
                     radius_m REAL NOT NULL DEFAULT 150.0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS geocode_cache (
                     lat_q REAL NOT NULL,
                     lon_q REAL NOT NULL,
@@ -124,34 +139,70 @@ class ReverseGeocoder:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (lat_q, lon_q)
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_manual_places_lat_lon
                 ON manual_places (lat, lon)
-                """
-            )
+                """)
+            # Migration: add per-user column to existing databases.
+            try:
+                conn.execute("ALTER TABLE manual_places ADD COLUMN user TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _lookup_manual(self, lat: float, lon: float) -> Optional[str]:
+    def _lookup_manual(
+        self, lat: float, lon: float, for_user: Optional[str] = None
+    ) -> Optional[str]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT name, lat, lon, radius_m FROM manual_places"
+                "SELECT name, lat, lon, radius_m, user FROM manual_places"
             ).fetchall()
 
-        best_name = None
-        best_distance = float("inf")
+        # Bucket matches into three tiers by closest distance within each.
+        user_best: Optional[str] = None
+        user_best_dist = float("inf")
+        global_best: Optional[str] = None
+        global_best_dist = float("inf")
+        other_best: Optional[tuple[str, str]] = None  # (user, name)
+        other_best_dist = float("inf")
+
         for row in rows:
             distance = _haversine_m(lat, lon, row["lat"], row["lon"])
-            if distance <= row["radius_m"] and distance < best_distance:
-                best_distance = distance
-                best_name = row["name"]
-        return best_name
+            if distance > row["radius_m"]:
+                continue
+
+            if row["user"] is None:
+                # Global place
+                if distance < global_best_dist:
+                    global_best_dist = distance
+                    global_best = row["name"]
+            elif for_user and row["user"] == for_user:
+                # Per-user place matching the person we're resolving for
+                if distance < user_best_dist:
+                    user_best_dist = distance
+                    user_best = row["name"]
+            else:
+                # Per-user place belonging to someone else
+                if distance < other_best_dist:
+                    other_best_dist = distance
+                    other_best = (row["user"], row["name"])
+
+        # Tier 1: per-user match for this person
+        if user_best is not None:
+            return user_best
+        # Tier 2: global match
+        if global_best is not None:
+            return global_best
+        # Tier 3: another user's place, prefixed with their name
+        if other_best is not None:
+            owner, name = other_best
+            return f"{owner}'s {name}"
+        return None
 
     def _lookup_cache(self, lat: float, lon: float) -> Optional[str]:
         lat_q, lon_q = self._cache_key(lat, lon)
@@ -246,7 +297,8 @@ class ReverseGeocoder:
                 # This usually means /reverse-geocode was used instead of /v2/reverse-geocode.
                 if (
                     resp.status_code == 403
-                    and "unable to determine service/operation name to be authorized" in lower_body
+                    and "unable to determine service/operation name to be authorized"
+                    in lower_body
                 ):
                     break
 

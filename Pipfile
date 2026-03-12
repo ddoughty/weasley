@@ -6,9 +6,11 @@ name = "pypi"
 [packages]
 playwright = ">=1.40.0"
 requests = ">=2.31.0"
+keyring = "*"
 
 [dev-packages]
-black = ">=24.10.0"
+black = "*"
+pytest = "*"
 
 [requires]
 python_version = "3.14.3"
