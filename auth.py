@@ -107,7 +107,9 @@ class WeasleyAuth:
         log.info("Interactive login complete. Session saved.")
         return True
 
-    def refresh_session(self, reprime_fmip: bool = False) -> bool:
+    def refresh_session(
+        self, reprime_fmip: bool = False, force_reprime: bool = False
+    ) -> bool:
         """
         Multi-tier session refresh.  Each tier escalates only when the
         previous tier fails:
@@ -116,8 +118,18 @@ class WeasleyAuth:
           Tier 2 — headless browser re-prime of FMIP cookie
           Tier 3 — automated re-login with stored credentials
           Tier 4 — give up; caller should fall back to interactive auth
+
+        If force_reprime is True, tier-1 success alone is not sufficient —
+        always escalate to tier-2 browser re-prime (used when an API call
+        already rejected the current FMIP cookie with a 450).
         """
-        log.info("[refresh] starting (reprime_fmip=%s)", reprime_fmip)
+        if force_reprime:
+            reprime_fmip = True
+        log.info(
+            "[refresh] starting (reprime_fmip=%s, force_reprime=%s)",
+            reprime_fmip,
+            force_reprime,
+        )
         if not self._cookies:
             if not self._load_cookies_from_disk():
                 log.warning("[refresh] no cookies on disk — cannot refresh")
@@ -127,7 +139,11 @@ class WeasleyAuth:
         # --- Tier 1: validate ---
         validated = self._validate_session()
         log.info("[refresh] tier-1 validate result: %s", validated)
-        if validated and (not reprime_fmip or self._has_cookie("X-APPLE-WEBAUTH-FMIP")):
+        if (
+            validated
+            and not force_reprime
+            and (not reprime_fmip or self._has_cookie("X-APPLE-WEBAUTH-FMIP"))
+        ):
             self._log_cookie_inventory("post-tier1-ok")
             return True
 
@@ -471,9 +487,9 @@ class WeasleyAuth:
                     user_data_dir=self.config.session_dir,
                     headless=headless,
                     args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-site-isolation-trials",
-                ],
+                        "--disable-blink-features=AutomationControlled",
+                        "--disable-site-isolation-trials",
+                    ],
                 )
                 page = context.new_page()
                 page.goto(ICLOUD_URL, wait_until="domcontentloaded", timeout=60000)
@@ -543,8 +559,7 @@ class WeasleyAuth:
 
             # Secondary: outer-page markers Apple wraps around the iframe
             auth_widget = page.locator(
-                "div.auth-widget, div.sign-in-label, "
-                "div.auth-widget-container"
+                "div.auth-widget, div.sign-in-label, " "div.auth-widget-container"
             )
             if auth_widget.count() > 0:
                 return True
@@ -586,7 +601,7 @@ class WeasleyAuth:
             if frame is None:
                 # Try finding the iframe element and getting its frame
                 iframe_el = page.locator(
-                    'iframe#aid-auth-widget-iFrame, '
+                    "iframe#aid-auth-widget-iFrame, "
                     'iframe[name="aid-auth-widget"], '
                     'iframe[src*="idmsa.apple.com"]'
                 )
@@ -595,7 +610,8 @@ class WeasleyAuth:
                     iframe_id = iframe_el.first.get_attribute("id")
                     log.info(
                         "[tier-3] found iframe element: name=%s id=%s",
-                        iframe_name, iframe_id,
+                        iframe_name,
+                        iframe_id,
                     )
                     if iframe_name:
                         frame = page.frame(name=iframe_name)
@@ -619,7 +635,8 @@ class WeasleyAuth:
                             frame = f
                             log.info(
                                 "[tier-3] found auth frame after %dms: %s",
-                                elapsed, f.url,
+                                elapsed,
+                                f.url,
                             )
                             break
                     if frame is not None:
@@ -655,7 +672,9 @@ class WeasleyAuth:
                 frame.wait_for_selector(email_sel, timeout=20000)
             except Exception:
                 # Email field may not appear if Apple already knows the account
-                log.info("[tier-3] email field did not appear, checking for password field")
+                log.info(
+                    "[tier-3] email field did not appear, checking for password field"
+                )
 
             # Some sign-in pages show email first, then password.
             # Apple may pre-fill and mark the email field readonly when
@@ -719,11 +738,11 @@ class WeasleyAuth:
             # Wait for the auth widget iframe to disappear (sign-in complete)
             # or for an error/2FA state.  The page URL stays at /find/ the
             # whole time since sign-in happens inside a cross-origin iframe.
-            auth_iframe_sel = 'iframe#aid-auth-widget-iFrame, iframe[name="aid-auth-widget"]'
+            auth_iframe_sel = (
+                'iframe#aid-auth-widget-iFrame, iframe[name="aid-auth-widget"]'
+            )
             try:
-                page.wait_for_selector(
-                    auth_iframe_sel, state="detached", timeout=15000
-                )
+                page.wait_for_selector(auth_iframe_sel, state="detached", timeout=15000)
                 log.info("[tier-3] auth iframe disappeared — sign-in succeeded")
                 return True
             except Exception:
@@ -784,13 +803,17 @@ class WeasleyAuth:
                     # Wait for the auth iframe or a redirect to appear
                     try:
                         page.wait_for_selector(
-                            'iframe#aid-auth-widget-iFrame, '
+                            "iframe#aid-auth-widget-iFrame, "
                             'iframe[name="aid-auth-widget"]',
                             timeout=10000,
                         )
-                        log.info("[prime-login] auth iframe appeared after clicking Sign In")
+                        log.info(
+                            "[prime-login] auth iframe appeared after clicking Sign In"
+                        )
                     except Exception:
-                        log.warning("[prime-login] auth iframe did not appear after clicking Sign In")
+                        log.warning(
+                            "[prime-login] auth iframe did not appear after clicking Sign In"
+                        )
                         # May have redirected to idmsa.apple.com — continue anyway
 
             success = self._fill_sign_in_form(page, email, password)
@@ -849,9 +872,9 @@ class WeasleyAuth:
                         user_data_dir=self.config.session_dir,
                         headless=headless,
                         args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-site-isolation-trials",
-                ],
+                            "--disable-blink-features=AutomationControlled",
+                            "--disable-site-isolation-trials",
+                        ],
                     )
                     self._prime_findmy_cookie_in_context(context, interactive=False)
                     self._cookies = context.cookies()

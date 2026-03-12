@@ -44,7 +44,7 @@ class WeasleyScraper:
                     log.warning(
                         "Find page warmup indicates re-auth challenge. Refreshing session and retrying once."
                     )
-                    if self.auth.refresh_session(reprime_fmip=True):
+                    if self.auth.refresh_session(force_reprime=True):
                         fmip_base = self.auth.fmip_base_url
                         fmf_base = self.auth.fmf_base_url or fmip_base
                         params = self.config.fmip_params
@@ -60,7 +60,7 @@ class WeasleyScraper:
                     log.warning(
                         "FMF request returned 450. Refreshing session and retrying once."
                     )
-                    if self.auth.refresh_session(reprime_fmip=True):
+                    if self.auth.refresh_session(force_reprime=True):
                         fmip_base = self.auth.fmip_base_url
                         fmf_base = self.auth.fmf_base_url or fmip_base
                         params = self.config.fmip_params
@@ -91,7 +91,7 @@ class WeasleyScraper:
                     log.warning(
                         "initClient returned 450. Refreshing session via validate and retrying once."
                     )
-                    if self.auth.refresh_session(reprime_fmip=True):
+                    if self.auth.refresh_session(force_reprime=True):
                         fmip_base = self.auth.fmip_base_url
                         fmf_base = self.auth.fmf_base_url or fmip_base
                         params = self.config.fmip_params
@@ -120,7 +120,7 @@ class WeasleyScraper:
                     log.warning(
                         "refreshClient returned 450. Refreshing session via validate and retrying once."
                     )
-                    if self.auth.refresh_session(reprime_fmip=True):
+                    if self.auth.refresh_session(force_reprime=True):
                         fmip_base = self.auth.fmip_base_url
                         fmf_base = self.auth.fmf_base_url or fmip_base
                         params = self.config.fmip_params
