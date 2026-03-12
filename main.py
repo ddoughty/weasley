@@ -43,7 +43,7 @@ def run_once(config: Config) -> bool:
     geocoder = ReverseGeocoder(config)
     for member in locations:
         member["location_label"] = geocoder.resolve_label(
-            member.get("lat"), member.get("lon")
+            member.get("lat"), member.get("lon"), for_user=member.get("name")
         )
 
     log.info(f"Fetched {len(locations)} family members.")
@@ -126,6 +126,10 @@ def main():
         help="Radius in meters for place-add (default: 150)",
     )
     parser.add_argument("--id", type=int, help="Row id for place-remove")
+    parser.add_argument(
+        "--user",
+        help="Family member name for per-user place override (place-add)",
+    )
     args = parser.parse_args()
 
     config = Config.load(args.config, args.env)
@@ -146,11 +150,14 @@ def main():
     elif args.command == "place-add":
         if args.name is None or args.lat is None or args.lon is None:
             parser.error("place-add requires --name, --lat, and --lon")
-        place_id = geocoder.add_manual_place(args.name, args.lat, args.lon, args.radius)
+        place_id = geocoder.add_manual_place(
+            args.name, args.lat, args.lon, args.radius, user=args.user
+        )
         log.info(
-            "Added place id=%s name=%r at lat=%s lon=%s radius=%sm",
+            "Added place id=%s name=%r user=%s at lat=%s lon=%s radius=%sm",
             place_id,
             args.name,
+            args.user or "(global)",
             args.lat,
             args.lon,
             args.radius,
@@ -161,9 +168,10 @@ def main():
             log.info("No manual places configured.")
         for place in places:
             log.info(
-                "id=%s name=%r lat=%s lon=%s radius=%sm created=%s",
+                "id=%s name=%r user=%s lat=%s lon=%s radius=%sm created=%s",
                 place["id"],
                 place["name"],
+                place["user"] or "(global)",
                 place["lat"],
                 place["lon"],
                 place["radius_m"],

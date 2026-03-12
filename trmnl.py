@@ -32,7 +32,9 @@ class WeasleyTRMNL:
         whatever Liquid template you build for the TRMNL plugin.
         """
         if not self.config.trmnl_api_key or not self.config.trmnl_plugin_uuid:
-            log.info("TRMNL not configured (missing api_key or plugin_uuid). Skipping push.")
+            log.info(
+                "TRMNL not configured (missing api_key or plugin_uuid). Skipping push."
+            )
             return False
 
         payload = self._build_payload(locations)
@@ -69,18 +71,22 @@ class WeasleyTRMNL:
         """
         members = []
         for loc in locations:
-            members.append({
-                "name": loc["name"],
-                "lat": loc.get("lat"),
-                "lon": loc.get("lon"),
-                "battery_level": _format_battery(loc.get("battery_level")),
-                "battery_status": loc.get("battery_status"),
-                "last_seen": _format_timestamp(loc.get("timestamp")),
-                "location_label": (
-                    loc.get("location_label")
-                    or self.geocoder.resolve_label(loc.get("lat"), loc.get("lon"))
-                ),
-            })
+            members.append(
+                {
+                    "name": loc["name"],
+                    "lat": loc.get("lat"),
+                    "lon": loc.get("lon"),
+                    "battery_level": _format_battery(loc.get("battery_level")),
+                    "battery_status": loc.get("battery_status"),
+                    "last_seen": _format_timestamp(loc.get("timestamp")),
+                    "location_label": (
+                        loc.get("location_label")
+                        or self.geocoder.resolve_label(
+                            loc.get("lat"), loc.get("lon"), for_user=loc.get("name")
+                        )
+                    ),
+                }
+            )
 
         return {
             "merge_variables": {
@@ -94,6 +100,7 @@ class WeasleyTRMNL:
 # ------------------------------------------------------------------
 # Formatting helpers
 # ------------------------------------------------------------------
+
 
 def _format_battery(level: Optional[float]) -> str:
     if level is None:
