@@ -69,7 +69,10 @@ class WeasleyAuth:
             context = p.chromium.launch_persistent_context(
                 user_data_dir=self.config.session_dir,
                 headless=False,
-                args=["--disable-blink-features=AutomationControlled"],
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-site-isolation-trials",
+                ],
             )
             page = context.new_page()
             page.goto(ICLOUD_URL)
@@ -467,7 +470,10 @@ class WeasleyAuth:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=self.config.session_dir,
                     headless=headless,
-                    args=["--disable-blink-features=AutomationControlled"],
+                    args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-site-isolation-trials",
+                ],
                 )
                 page = context.new_page()
                 page.goto(ICLOUD_URL, wait_until="domcontentloaded", timeout=60000)
@@ -544,9 +550,12 @@ class WeasleyAuth:
                 return True
 
             # Tertiary: fully logged-out landing page with a standalone
-            # "Sign In" button (no iframe, no auth widget — just a CTA)
-            sign_in_btn = page.locator('button:has-text("Sign In")')
-            if sign_in_btn.count() > 0:
+            # "Sign In" CTA (may be a <button>, <a>, or other element)
+            sign_in_cta = page.locator(
+                'button:has-text("Sign In"), a:has-text("Sign In"), '
+                '[role="button"]:has-text("Sign In")'
+            )
+            if sign_in_cta.count() > 0:
                 return True
 
             # Quaternary: check for inline email/password inputs (no iframe)
@@ -571,15 +580,79 @@ class WeasleyAuth:
         Returns True if we appear to have reached the iCloud home/app screen.
         """
         try:
-            # iCloud sign-in may use an iframe; wait for it to be available
-            frame = page.frame(name="aid-auth-widget") or page
+            # iCloud sign-in may use an iframe; try multiple ways to find it.
+            # The iframe name/ID can vary between flow states.
+            frame = page.frame(name="aid-auth-widget")
+            if frame is None:
+                # Try finding the iframe element and getting its frame
+                iframe_el = page.locator(
+                    'iframe#aid-auth-widget-iFrame, '
+                    'iframe[name="aid-auth-widget"], '
+                    'iframe[src*="idmsa.apple.com"]'
+                )
+                if iframe_el.count() > 0:
+                    iframe_name = iframe_el.first.get_attribute("name")
+                    iframe_id = iframe_el.first.get_attribute("id")
+                    log.info(
+                        "[tier-3] found iframe element: name=%s id=%s",
+                        iframe_name, iframe_id,
+                    )
+                    if iframe_name:
+                        frame = page.frame(name=iframe_name)
+                    if frame is None and iframe_id:
+                        frame = page.frame(name=iframe_id)
+                    if frame is None:
+                        # Try by URL pattern
+                        for f in page.frames:
+                            if "idmsa.apple.com" in (f.url or ""):
+                                frame = f
+                                break
+            # The iframe DOM element may appear before its content has loaded.
+            # Poll until a frame with the idmsa.apple.com URL appears.
+            if frame is None:
+                max_frame_wait = 15000
+                elapsed = 0
+                poll_ms = 500
+                while elapsed < max_frame_wait:
+                    for f in page.frames:
+                        if "idmsa.apple.com" in (f.url or ""):
+                            frame = f
+                            log.info(
+                                "[tier-3] found auth frame after %dms: %s",
+                                elapsed, f.url,
+                            )
+                            break
+                    if frame is not None:
+                        break
+                    page.wait_for_timeout(poll_ms)
+                    elapsed += poll_ms
+
+            if frame is None:
+                log.warning("[tier-3] auth frame never loaded")
+                log.info("[tier-3] page has %d frame(s):", len(page.frames))
+                for i, f in enumerate(page.frames):
+                    log.info("[tier-3]   frame[%d]: name=%r url=%s", i, f.name, f.url)
+                frame = page
 
             # Wait for the iframe content to actually render its inputs
             # (the iframe is cross-origin so its DOM loads asynchronously)
-            email_sel = 'input[type="email"], input[name="appleId"], input#account_name_text_field'
-            password_sel = 'input[type="password"], input[name="password"]'
+            email_sel = (
+                'input[type="email"], input[name="appleId"], '
+                "input#account_name_text_field, "
+                'input[autocomplete="username"]'
+            )
+            password_sel = (
+                'input[type="password"], input[name="password"], '
+                "input#password_text_field"
+            )
+            log.info(
+                "[tier-3] using frame: %s (url: %s)",
+                "iframe" if frame != page else "page",
+                frame.url if hasattr(frame, "url") else "n/a",
+            )
+
             try:
-                frame.wait_for_selector(email_sel, timeout=10000)
+                frame.wait_for_selector(email_sel, timeout=20000)
             except Exception:
                 # Email field may not appear if Apple already knows the account
                 log.info("[tier-3] email field did not appear, checking for password field")
@@ -609,7 +682,7 @@ class WeasleyAuth:
 
             # Now fill password — wait for it to appear after email submission
             try:
-                frame.wait_for_selector(password_sel, timeout=10000)
+                frame.wait_for_selector(password_sel, timeout=20000)
             except Exception:
                 log.warning("[tier-3] password field did not appear within 10s")
                 return False
@@ -625,12 +698,20 @@ class WeasleyAuth:
                 # Apple's JS moves focus to the passkey button after typing.
                 # Press Enter (which goes nowhere), wait, re-focus the
                 # password field, then press Enter again to actually submit.
+                # If the first Enter succeeds and the iframe detaches, the
+                # second attempt will throw — treat that as success.
                 password_input.first.press("Enter")
                 page.wait_for_timeout(1000)
-                password_input.first.click(force=True)
-                page.wait_for_timeout(500)
-                password_input.first.press("Enter")
-                log.info("[tier-3] submitted password form")
+                try:
+                    password_input.first.click(force=True)
+                    page.wait_for_timeout(500)
+                    password_input.first.press("Enter")
+                    log.info("[tier-3] submitted password form")
+                except Exception as e:
+                    if "detached" in str(e).lower():
+                        log.info("[tier-3] auth iframe detached — sign-in succeeded")
+                        return True
+                    raise
             else:
                 log.warning("[tier-3] could not find password field")
                 return False
@@ -693,7 +774,10 @@ class WeasleyAuth:
                 'iframe#aid-auth-widget-iFrame, iframe[name="aid-auth-widget"]'
             )
             if auth_iframe.count() == 0:
-                landing_btn = page.locator('button:has-text("Sign In")')
+                landing_btn = page.locator(
+                    'button:has-text("Sign In"), a:has-text("Sign In"), '
+                    '[role="button"]:has-text("Sign In")'
+                )
                 if landing_btn.count() > 0:
                     log.info("[prime-login] clicking landing-page Sign In button")
                     landing_btn.first.click()
@@ -764,7 +848,10 @@ class WeasleyAuth:
                     context = p.chromium.launch_persistent_context(
                         user_data_dir=self.config.session_dir,
                         headless=headless,
-                        args=["--disable-blink-features=AutomationControlled"],
+                        args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-site-isolation-trials",
+                ],
                     )
                     self._prime_findmy_cookie_in_context(context, interactive=False)
                     self._cookies = context.cookies()
