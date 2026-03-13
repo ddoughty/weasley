@@ -124,6 +124,9 @@ class Config:
     places_db_path: str = "./session/places.db"
     places_cache_precision: int = 4
 
+    # Display
+    display_timezone: str = "America/New_York"  # IANA timezone for displayed times
+
     # Polling
     poll_interval: int = 300        # seconds between refreshes (5 min default)
 
@@ -185,6 +188,7 @@ class Config:
             "amazon_places_endpoint": self.amazon_places_endpoint,
             "places_db_path": self.places_db_path,
             "places_cache_precision": self.places_cache_precision,
+            "display_timezone": self.display_timezone,
             "family_members": self.family_members,
         }
         if include_secrets:

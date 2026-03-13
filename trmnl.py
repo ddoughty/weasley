@@ -8,6 +8,7 @@ See: https://docs.usetrmnl.com/go/private-plugins/create-a-plugin
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -78,7 +79,9 @@ class WeasleyTRMNL:
                     "lon": loc.get("lon"),
                     "battery_level": _format_battery(loc.get("battery_level")),
                     "battery_status": loc.get("battery_status"),
-                    "last_seen": _format_timestamp(loc.get("timestamp")),
+                    "last_seen": _format_timestamp(
+                        loc.get("timestamp"), self.config.display_timezone
+                    ),
                     "location_label": (
                         loc.get("location_label")
                         or self.geocoder.resolve_label(
@@ -91,7 +94,9 @@ class WeasleyTRMNL:
         return {
             "merge_variables": {
                 "members": members,
-                "updated_at": datetime.now(timezone.utc).strftime("%I:%M %p"),
+                "updated_at": datetime.now(
+                    ZoneInfo(self.config.display_timezone)
+                ).strftime("%I:%M %p"),
                 "member_count": len(members),
             }
         }
@@ -108,12 +113,12 @@ def _format_battery(level: Optional[float]) -> str:
     return f"{int(level * 100)}%"
 
 
-def _format_timestamp(ts: Optional[int]) -> str:
+def _format_timestamp(ts: Optional[int], tz_name: str = "America/New_York") -> str:
     """Convert a millisecond epoch timestamp to a readable time string."""
     if ts is None:
         return "Unknown"
     try:
-        dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+        dt = datetime.fromtimestamp(ts / 1000, tz=ZoneInfo(tz_name))
         return dt.strftime("%I:%M %p")
     except Exception:
         return "Unknown"
