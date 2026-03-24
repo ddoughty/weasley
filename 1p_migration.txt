@@ -1,0 +1,55 @@
+⏺ Yes, there are a few good approaches. Here's what makes sense for this project:
+
+  Option 1: op run with op:// references (simplest, no code changes)
+
+  Replace your .env values with 1Password secret references:
+
+  # .env
+  WEASLEY_APPLE_ID=op://Personal/Weasley/apple_id
+  WEASLEY_TRMNL_API_KEY=op://Personal/Weasley/trmnl_api_key
+  WEASLEY_TRMNL_PLUGIN_UUID=op://Personal/Weasley/trmnl_plugin_uuid
+  WEASLEY_AMAZON_PLACES_API_KEY=op://Personal/Weasley/amazon_places_api_key
+
+  Then run with:
+  op run --env-file=.env -- python main.py daemon
+
+  The 1Password CLI resolves all op:// references before the process starts. Zero code changes needed — config.py just sees normal
+  environment variables.
+
+  Option 2: 1Password Python SDK (programmatic)
+
+  Install onepassword and retrieve secrets in config.py directly:
+
+  from onepassword import Client
+
+  async def get_secrets():
+      client = await Client.authenticate(service_account_token=os.environ["OP_SERVICE_ACCOUNT_TOKEN"])
+      api_key = await client.secrets.resolve("op://Personal/Weasley/trmnl_api_key")
+
+  This requires more code changes and a service account token.
+
+  Option 3: 1Password shell plugin
+
+  Add to your ~/.zshrc:
+  source ~/.config/op/plugins.sh
+
+  Then secrets are injected automatically for configured commands.
+
+  ---
+  My recommendation: Option 1 (op run). Reasons:
+
+  - Your config.py already loads from environment variables with .env fallback — op run fits perfectly into that flow
+  - No code changes required
+  - The .env file with op:// references is safe to commit (they're just pointers, not secrets)
+  - Works for both once and daemon modes
+  - Your Keychain-based iCloud credentials in credentials.py can stay as-is since they're already secure
+
+  To set it up:
+  1. Install 1Password CLI: brew install 1password-cli
+  2. Create a vault item called "Weasley" with your secrets as fields
+  3. Update .env with op:// references
+  4. Run via op run --env-file=.env -- python main.py daemon
+
+  Want me to implement any of these approaches?
+
+✻ Brewed for 1m 14s
