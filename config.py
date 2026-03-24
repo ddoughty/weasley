@@ -60,7 +60,32 @@ def _is_uuid(value: str) -> bool:
     return str(parsed) == value.lower()
 
 
+def _dotenv_value_for_key(path: str, key: str) -> str | None:
+    """Return the raw value for *key* in *path*, or None if absent."""
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() == key:
+                return _strip_optional_quotes(v)
+    return None
+
+
 def _upsert_dotenv(path: str, key: str, value: str) -> None:
+    # If the on-disk value is a 1Password reference, leave the file alone —
+    # the real value was injected by `op run` and only lives in memory.
+    existing = _dotenv_value_for_key(path, key)
+    if existing is not None and existing.startswith("op://"):
+        return
+
     new_line = f"{key}={_quote_env_value(value)}\n"
     lines: list[str] = []
     found = False
