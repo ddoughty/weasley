@@ -479,13 +479,12 @@ class WeasleyAuth:
         email, password = creds
 
         log.info("[tier-3] attempting automated re-login for %s", email)
-        headless = not os.environ.get("WEASLEY_DEBUG_BROWSER")
         success = False
         try:
             with sync_playwright() as p:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=self.config.session_dir,
-                    headless=headless,
+                    headless=True,
                     args=[
                         "--disable-blink-features=AutomationControlled",
                         "--disable-site-isolation-trials",
@@ -858,8 +857,8 @@ class WeasleyAuth:
 
         Retries up to *max_attempts* times if the FMIP cookie is not minted.
         """
-        headless = not os.environ.get("WEASLEY_DEBUG_BROWSER")
         for attempt in range(1, max_attempts + 1):
+            headless = attempt < max_attempts  # visible on final attempt only
             log.info(
                 "[refresh-browser] attempt %d/%d (headless=%s)",
                 attempt,
