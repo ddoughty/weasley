@@ -78,8 +78,8 @@ Store secrets in 1Password and let the CLI inject them at runtime.
    brew install 1password-cli
    ```
 
-2. Create a vault item called **Weasley** (in your Personal vault) with these
-   fields: `apple_id`, `trmnl_api_key`, `trmnl_plugin_uuid`,
+2. Create a vault called **Weasley** and add an item called **Weasley** with
+   these fields: `apple_id`, `trmnl_api_key`, `trmnl_plugin_uuid`,
    `amazon_places_api_key`.
 
 3. The repo includes `.env.op` with `op://` secret references. Run with:
