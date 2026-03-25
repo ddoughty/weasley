@@ -34,6 +34,7 @@ config.json
 .env
 .env.*
 !.env.example
+!.env.op
 *.keychain-db
 *.keychain
 

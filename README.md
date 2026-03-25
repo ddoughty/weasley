@@ -45,7 +45,11 @@ Fill in `config.json`:
 `family_members` maps iCloud device names to display names. Leave it empty
 `{}` to include all devices.
 
-### 3. Configure secrets in `.env`
+### 3. Configure secrets
+
+You can store secrets in a plain `.env` file or use 1Password.
+
+#### Option A: Plain `.env` (default)
 
 Copy `.env.example` to `.env` and fill in your values:
 
@@ -64,6 +68,28 @@ WEASLEY_AMAZON_PLACES_API_KEY=your-amazon-places-api-key
 
 `WEASLEY_CLIENT_ID` is auto-generated if missing. `WEASLEY_DSID` is captured
 after successful authentication.
+
+#### Option B: 1Password
+
+Store secrets in 1Password and let the CLI inject them at runtime.
+
+1. Install the 1Password CLI:
+   ```bash
+   brew install 1password-cli
+   ```
+
+2. Create a vault called **Weasley** and add an item called **Weasley** with
+   these fields: `apple_id`, `trmnl_api_key`, `trmnl_plugin_uuid`,
+   `amazon_places_api_key`.
+
+3. The repo includes `.env.op` with `op://` secret references. Run with:
+   ```bash
+   op run --env-file=.env.op -- python main.py daemon
+   ```
+
+Dynamic secrets (`WEASLEY_DSID`, `WEASLEY_CLIENT_ID`) are auto-generated and
+persisted to `.env` locally — they don't need to be in 1Password. If `.env`
+doesn't exist yet, Weasley will create it on first run.
 
 ### 4.5 Reverse geocoding
 
@@ -125,11 +151,15 @@ the session expires (roughly monthly based on observed cookie lifetimes).
 Single fetch:
 ```bash
 python main.py once
+# or with 1Password:
+op run --env-file=.env.op -- python main.py once
 ```
 
 Continuous polling:
 ```bash
 python main.py daemon
+# or with 1Password:
+op run --env-file=.env.op -- python main.py daemon
 ```
 
 ## Architecture
@@ -143,7 +173,8 @@ trmnl.py      — TRMNL webhook push
 geocoder.py   — manual labels + cache + Amazon reverse geocoding
 session/      — gitignored, persistent browser profile + saved cookies
 config.json   — gitignored local runtime settings
-.env          — gitignored credentials and IDs
+.env          — gitignored credentials and dynamic IDs
+.env.op       — 1Password secret references (committed, safe — just pointers)
 ```
 
 ## Session lifetime
