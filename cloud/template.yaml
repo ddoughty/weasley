@@ -143,7 +143,7 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref GeocodeCacheTable
         - SNSPublishMessagePolicy:
-            TopicArn: !Ref LocationChangesTopic
+            TopicName: !GetAtt LocationChangesTopic.TopicName
       Events:
         SQSEvent:
           Type: SQS

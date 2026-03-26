@@ -1,0 +1,12 @@
+# SAM CLI configuration for Weasley cloud pipeline.
+# Secrets are passed via parameter_overrides at deploy time.
+# See deploy.sh for the full deploy command.
+
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "weasley-cloud"
+region = "us-east-1"
+resolve_s3 = true
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
