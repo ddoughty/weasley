@@ -28,7 +28,7 @@ if [ -z "$API_KEY" ]; then
     exit 1
 fi
 
-sam build --template template.yaml
+sam build --template template.yaml --use-container
 
 sam deploy \
     --parameter-overrides \
