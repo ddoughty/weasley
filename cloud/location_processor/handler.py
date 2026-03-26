@@ -12,10 +12,6 @@ import time
 import boto3
 import requests
 
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from shared.dynamo import (
     cache_key,
     get_geocode_cache,

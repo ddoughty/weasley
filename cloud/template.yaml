@@ -125,8 +125,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: weasley-location-processor
-      Handler: handler.lambda_handler
-      CodeUri: location_processor/
+      Handler: location_processor.handler.lambda_handler
+      CodeUri: .
       Environment:
         Variables:
           SNS_TOPIC_ARN: !Ref LocationChangesTopic
@@ -158,8 +158,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: weasley-trmnl-consumer
-      Handler: handler.lambda_handler
-      CodeUri: trmnl_consumer/
+      Handler: trmnl_consumer.handler.lambda_handler
+      CodeUri: .
       Environment:
         Variables:
           TRMNL_API_KEY: !Ref TrmnlApiKey
@@ -181,8 +181,8 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: weasley-api
-      Handler: handler.lambda_handler
-      CodeUri: api/
+      Handler: api.handler.lambda_handler
+      CodeUri: .
       Environment:
         Variables:
           API_KEY: !Ref ApiKeyValue
