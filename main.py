@@ -57,6 +57,10 @@ def run_once(config: Config) -> bool:
     trmnl = WeasleyTRMNL(config)
     trmnl.push(locations)
 
+    from publisher import publish_locations
+
+    publish_locations(config, locations)
+
     return True
 
 
@@ -68,7 +72,7 @@ def run_daemon(config: Config):
             run_once(config)
         except Exception as e:
             log.error(f"Unexpected error: {e}", exc_info=True)
-        jitter = random.uniform(-1/6, 1/6)
+        jitter = random.uniform(-1 / 6, 1 / 6)
         sleep_time = int(config.poll_interval * (1 + jitter))
         log.info(f"Sleeping {sleep_time}s (base {config.poll_interval}s ± jitter)...")
         time.sleep(sleep_time)
