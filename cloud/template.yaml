@@ -1,0 +1,240 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Weasley cloud pipeline — processes family location events from SQS,
+  detects changes, geocodes, and fans out via SNS.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Architectures:
+      - arm64
+    Environment:
+      Variables:
+        LOCATIONS_TABLE: !Ref LocationsTable
+        PLACES_TABLE: !Ref PlacesTable
+        GEOCODE_CACHE_TABLE: !Ref GeocodeCacheTable
+
+Parameters:
+  DistanceThresholdM:
+    Type: Number
+    Default: 200
+    Description: Meters of movement before triggering a "movement" event.
+
+  HeartbeatIntervalS:
+    Type: Number
+    Default: 3600
+    Description: Seconds between forced heartbeat updates (even if no movement).
+
+  AmazonPlacesApiKey:
+    Type: String
+    NoEcho: true
+    Description: API key for Amazon Location Service reverse geocoding.
+
+  TrmnlApiKey:
+    Type: String
+    NoEcho: true
+    Description: TRMNL API bearer token.
+
+  TrmnlPluginUuid:
+    Type: String
+    Description: TRMNL custom plugin UUID.
+
+  DisplayTimezone:
+    Type: String
+    Default: "America/New_York"
+    Description: IANA timezone for display timestamps.
+
+  ApiKeyValue:
+    Type: String
+    NoEcho: true
+    Description: API key for the Weasley REST API.
+
+  CachePrecision:
+    Type: Number
+    Default: 4
+    Description: Decimal places for geocode cache coordinate rounding.
+
+Resources:
+  # -----------------------------------------------------------------------
+  # SQS — raw location events from the desktop app
+  # -----------------------------------------------------------------------
+  RawLocationsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: weasley-raw-locations
+      MessageRetentionPeriod: 1209600  # 14 days
+      VisibilityTimeout: 60
+
+  # -----------------------------------------------------------------------
+  # SNS — enriched location change events for downstream consumers
+  # -----------------------------------------------------------------------
+  LocationChangesTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: weasley-location-changes
+
+  # -----------------------------------------------------------------------
+  # DynamoDB tables
+  # -----------------------------------------------------------------------
+  LocationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: weasley-locations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: person
+          AttributeType: S
+      KeySchema:
+        - AttributeName: person
+          KeyType: HASH
+
+  PlacesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: weasley-places
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: place_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: place_id
+          KeyType: HASH
+
+  GeocodeCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: weasley-geocode-cache
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: lat_lon_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: lat_lon_key
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # -----------------------------------------------------------------------
+  # Lambda: Location Processor (SQS -> DynamoDB + SNS)
+  # -----------------------------------------------------------------------
+  LocationProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: weasley-location-processor
+      Handler: handler.lambda_handler
+      CodeUri: location_processor/
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref LocationChangesTopic
+          DISTANCE_THRESHOLD_M: !Ref DistanceThresholdM
+          HEARTBEAT_INTERVAL_S: !Ref HeartbeatIntervalS
+          AMAZON_PLACES_API_KEY: !Ref AmazonPlacesApiKey
+          AMAZON_PLACES_REGION: us-east-1
+          CACHE_PRECISION: !Ref CachePrecision
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LocationsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PlacesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref GeocodeCacheTable
+        - SNSPublishMessagePolicy:
+            TopicArn: !Ref LocationChangesTopic
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RawLocationsQueue.Arn
+            BatchSize: 10
+
+  # -----------------------------------------------------------------------
+  # Lambda: TRMNL Consumer (SNS -> TRMNL webhook)
+  # -----------------------------------------------------------------------
+  TrmnlConsumerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: weasley-trmnl-consumer
+      Handler: handler.lambda_handler
+      CodeUri: trmnl_consumer/
+      Environment:
+        Variables:
+          TRMNL_API_KEY: !Ref TrmnlApiKey
+          TRMNL_PLUGIN_UUID: !Ref TrmnlPluginUuid
+          DISPLAY_TIMEZONE: !Ref DisplayTimezone
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref LocationsTable
+      Events:
+        SNSEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref LocationChangesTopic
+
+  # -----------------------------------------------------------------------
+  # Lambda: REST API (API Gateway -> DynamoDB)
+  # -----------------------------------------------------------------------
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: weasley-api
+      Handler: handler.lambda_handler
+      CodeUri: api/
+      Environment:
+        Variables:
+          API_KEY: !Ref ApiKeyValue
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LocationsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PlacesTable
+      Events:
+        GetLocations:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /locations
+            Method: GET
+        GetPlaces:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /places
+            Method: GET
+        CreatePlace:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /places
+            Method: POST
+        DeletePlace:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /places/{place_id}
+            Method: DELETE
+
+  WeasleyHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: prod
+
+Outputs:
+  SqsQueueUrl:
+    Description: SQS queue URL for the desktop app to publish to.
+    Value: !Ref RawLocationsQueue
+
+  SqsQueueArn:
+    Description: SQS queue ARN.
+    Value: !GetAtt RawLocationsQueue.Arn
+
+  SnsTopicArn:
+    Description: SNS topic ARN for location change events.
+    Value: !Ref LocationChangesTopic
+
+  ApiUrl:
+    Description: Base URL for the Weasley REST API.
+    Value: !Sub "https://${WeasleyHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
