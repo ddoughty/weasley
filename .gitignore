@@ -38,5 +38,8 @@ config.json
 *.keychain-db
 *.keychain
 
+# AWS SAM build artifacts
+cloud/.aws-sam/
+
 # Dolt database files (added by bd init)
 .dolt/

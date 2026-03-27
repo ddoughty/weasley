@@ -49,7 +49,7 @@ def _load_dotenv(path: str) -> None:
 
 def _quote_env_value(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f"\"{escaped}\""
+    return f'"{escaped}"'
 
 
 def _is_uuid(value: str) -> bool:
@@ -128,8 +128,8 @@ def _upsert_dotenv(path: str, key: str, value: str) -> None:
 class Config:
     # iCloud credentials / session params (recommended via .env)
     apple_id: str = ""
-    dsid: str = ""                  # numeric Apple ID, from validate response
-    client_id: str = ""             # GUID sent to FMIP endpoints
+    dsid: str = ""  # numeric Apple ID, from validate response
+    client_id: str = ""  # GUID sent to FMIP endpoints
 
     # Build numbers — update if Apple changes these
     client_build_number: str = "2604Build20"
@@ -140,7 +140,7 @@ class Config:
 
     # TRMNL
     trmnl_api_key: str = ""
-    trmnl_plugin_uuid: str = ""     # your custom plugin UUID
+    trmnl_plugin_uuid: str = ""  # your custom plugin UUID
 
     # Reverse geocoding
     amazon_places_api_key: str = ""
@@ -153,7 +153,12 @@ class Config:
     display_timezone: str = "America/New_York"  # IANA timezone for displayed times
 
     # Polling
-    poll_interval: int = 300        # seconds between refreshes (5 min default)
+    poll_interval: int = 300  # seconds between refreshes (5 min default)
+
+    # Cloud pipeline
+    sqs_queue_url: str = ""
+    api_url: str = ""
+    api_key: str = ""
 
     # Family members to track: maps iCloud device name -> display name
     # e.g. {"Dennis's iPhone": "Dennis"}
@@ -169,6 +174,9 @@ class Config:
         "trmnl_api_key": "WEASLEY_TRMNL_API_KEY",
         "trmnl_plugin_uuid": "WEASLEY_TRMNL_PLUGIN_UUID",
         "amazon_places_api_key": "WEASLEY_AMAZON_PLACES_API_KEY",
+        "sqs_queue_url": "WEASLEY_SQS_QUEUE_URL",
+        "api_url": "WEASLEY_API_URL",
+        "api_key": "WEASLEY_API_KEY",
     }
 
     @classmethod
@@ -217,14 +225,16 @@ class Config:
             "family_members": self.family_members,
         }
         if include_secrets:
-            data.update({
-                "apple_id": self.apple_id,
-                "dsid": self.dsid,
-                "client_id": self.client_id,
-                "trmnl_api_key": self.trmnl_api_key,
-                "trmnl_plugin_uuid": self.trmnl_plugin_uuid,
-                "amazon_places_api_key": self.amazon_places_api_key,
-            })
+            data.update(
+                {
+                    "apple_id": self.apple_id,
+                    "dsid": self.dsid,
+                    "client_id": self.client_id,
+                    "trmnl_api_key": self.trmnl_api_key,
+                    "trmnl_plugin_uuid": self.trmnl_plugin_uuid,
+                    "amazon_places_api_key": self.amazon_places_api_key,
+                }
+            )
         return data
 
     def set_secret(self, field_name: str, value: str):
