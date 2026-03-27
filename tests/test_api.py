@@ -15,7 +15,6 @@ def _mock_env(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-secret-key")
     monkeypatch.setenv("LOCATIONS_TABLE", "weasley-locations")
     monkeypatch.setenv("PLACES_TABLE", "weasley-places")
-    monkeypatch.setenv("DISPLAY_TIMEZONE", "America/New_York")
 
 
 def _api_event(method, path, body=None, headers=None, path_params=None):
@@ -209,101 +208,6 @@ class TestDeletePlace:
         body = json.loads(result["body"])
         assert body["deleted"] == "abc-123"
         mock_delete.assert_called_once_with("abc-123")
-
-
-class TestQueryParamAuth:
-    @patch("api.handler.get_all_locations")
-    def test_auth_via_query_param(self, mock_get):
-        from api.handler import lambda_handler
-
-        mock_get.return_value = []
-        event = _api_event("GET", "/prod/locations", headers={})
-        event["headers"] = {}
-        event["queryStringParameters"] = {"key": "test-secret-key"}
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 200
-
-    def test_wrong_query_param_returns_401(self):
-        from api.handler import lambda_handler
-
-        event = _api_event("GET", "/prod/locations", headers={})
-        event["headers"] = {}
-        event["queryStringParameters"] = {"key": "wrong-key"}
-        result = lambda_handler(event, None)
-        assert result["statusCode"] == 401
-
-
-class TestDashboard:
-    @patch("api.handler.get_all_locations")
-    def test_returns_html(self, mock_get):
-        from api.handler import lambda_handler
-
-        mock_get.return_value = [
-            {
-                "person": "Dennis",
-                "lat": 42.36,
-                "lon": -71.06,
-                "location_label": "Home",
-                "battery_level": 0.85,
-                "battery_status": "Unplugged",
-                "timestamp": 1711334400000,
-            },
-        ]
-        event = _api_event("GET", "/prod/dashboard")
-        result = lambda_handler(event, None)
-
-        assert result["statusCode"] == 200
-        assert result["headers"]["Content-Type"] == "text/html"
-        assert "Dennis" in result["body"]
-        assert "Home" in result["body"]
-        assert "85%" in result["body"]
-        assert "Weasley Clock" in result["body"]
-
-    @patch("api.handler.get_all_locations")
-    def test_empty_locations_shows_message(self, mock_get):
-        from api.handler import lambda_handler
-
-        mock_get.return_value = []
-        event = _api_event("GET", "/prod/dashboard")
-        result = lambda_handler(event, None)
-
-        assert result["statusCode"] == 200
-        assert "No family members tracked yet" in result["body"]
-
-    @patch("api.handler.get_all_locations")
-    def test_html_escapes_user_data(self, mock_get):
-        from api.handler import lambda_handler
-
-        mock_get.return_value = [
-            {
-                "person": "<script>alert(1)</script>",
-                "lat": 42.36,
-                "lon": -71.06,
-                "location_label": '<img src=x onerror="alert(1)">',
-                "timestamp": 1711334400000,
-            },
-        ]
-        event = _api_event("GET", "/prod/dashboard")
-        result = lambda_handler(event, None)
-
-        assert "<script>" not in result["body"]
-        assert "&lt;script&gt;" in result["body"]
-        # Verify the img tag is escaped (angle brackets neutralized)
-        assert "<img " not in result["body"]
-        assert "&lt;img " in result["body"]
-
-    @patch("api.handler.get_all_locations")
-    def test_dashboard_via_query_param_auth(self, mock_get):
-        from api.handler import lambda_handler
-
-        mock_get.return_value = []
-        event = _api_event("GET", "/prod/dashboard", headers={})
-        event["headers"] = {}
-        event["queryStringParameters"] = {"key": "test-secret-key"}
-        result = lambda_handler(event, None)
-
-        assert result["statusCode"] == 200
-        assert result["headers"]["Content-Type"] == "text/html"
 
 
 class TestRouting:
