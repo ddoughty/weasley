@@ -152,7 +152,41 @@ Resources:
             BatchSize: 10
 
   # -----------------------------------------------------------------------
-  # Lambda: TRMNL Consumer (SNS -> TRMNL webhook)
+  # SQS — buffer between SNS and TRMNL consumer for debouncing
+  # -----------------------------------------------------------------------
+  TrmnlBufferQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: weasley-trmnl-buffer
+      MessageRetentionPeriod: 86400  # 1 day
+      VisibilityTimeout: 60
+
+  TrmnlBufferQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref TrmnlBufferQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt TrmnlBufferQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref LocationChangesTopic
+
+  TrmnlBufferSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref LocationChangesTopic
+      Protocol: sqs
+      Endpoint: !GetAtt TrmnlBufferQueue.Arn
+
+  # -----------------------------------------------------------------------
+  # Lambda: TRMNL Consumer (SQS buffer -> TRMNL webhook)
   # -----------------------------------------------------------------------
   TrmnlConsumerFunction:
     Type: AWS::Serverless::Function
@@ -169,10 +203,12 @@ Resources:
         - DynamoDBReadPolicy:
             TableName: !Ref LocationsTable
       Events:
-        SNSEvent:
-          Type: SNS
+        SQSEvent:
+          Type: SQS
           Properties:
-            Topic: !Ref LocationChangesTopic
+            Queue: !GetAtt TrmnlBufferQueue.Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 15
 
   # -----------------------------------------------------------------------
   # Lambda: REST API (API Gateway -> DynamoDB)

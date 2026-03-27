@@ -1,9 +1,10 @@
 """
-TRMNL Consumer Lambda — receives enriched location events from SNS
+TRMNL Consumer Lambda — receives batched location events via SQS
 and pushes updated family locations to the TRMNL e-ink display.
 
-On every SNS trigger, reads ALL current locations from DynamoDB and
-pushes a full family update to the TRMNL custom plugin webhook.
+An SQS buffer queue sits between the SNS topic and this Lambda,
+with a 15-second batch window. This collapses multiple per-member
+updates from a single polling cycle into one TRMNL push.
 """
 
 import json
@@ -29,8 +30,11 @@ http = urllib3.PoolManager()
 
 
 def lambda_handler(event, context):
-    """SNS trigger: read all locations and push to TRMNL."""
-    log.info("TRMNL consumer invoked with %d record(s)", len(event.get("Records", [])))
+    """SQS trigger: read all locations and push to TRMNL."""
+    records = event.get("Records", [])
+    log.info(
+        "TRMNL consumer invoked with %d batched record(s) — single push", len(records)
+    )
 
     locations = get_all_locations()
     if not locations:
