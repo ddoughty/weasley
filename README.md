@@ -1,39 +1,60 @@
-# Weasley 🕰️
+# Weasley
 
 > *"It's a clock, but instead of hands, there are little figures of family members..."*
 > — Harry Potter and the Chamber of Secrets
 
-Weasley polls Apple's Find My via iCloud web and pushes family member locations
-to a [TRMNL](https://usetrmnl.com) e-ink display.
+Weasley polls Apple's Find My via iCloud web and shows family member locations
+on a [TRMNL](https://usetrmnl.com) e-ink display.
+
+## Architecture
+
+```
+Desktop (macOS)                          AWS Cloud
++-----------------+                      +----------------------------------+
+| main.py         |    SQS              | Location Processor Lambda        |
+|  auth.py        | -- RawLocationEvent -->  resolve labels (places/cache/  |
+|  scraper.py     |                      |    Amazon Places API)            |
+|  publisher.py   |                      |  detect movement/heartbeat       |
++-----------------+                      |  store in DynamoDB               |
+                                         |  publish EnrichedLocationEvent   |
+                                         +----------|---------------------+
+                                                    | SNS
+                                         +----------|---------------------+
+                                         | SQS buffer (15s batch window)  |
+                                         +----------|---------------------+
+                                                    |
+                                         +----------|---------------------+
+                                         | TRMNL Consumer Lambda          |
+                                         |  read ALL locations from Dynamo |
+                                         |  push to TRMNL display webhook |
+                                         +----------------------------------+
+                                         | REST API Lambda (API Gateway)   |
+                                         |  GET/POST/DELETE places + locs  |
+                                         +----------------------------------+
+```
+
+The desktop agent **only** handles iCloud authentication (which requires macOS
+Keychain) and location scraping. All geocoding, display updates, and place
+management are handled by the cloud pipeline.
 
 ## Setup
 
 ### 1. Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pipenv install
 playwright install chromium
 ```
 
 ### 2. Configure runtime settings
 
-On first run, a template `config.json` will be created with non-secret settings:
-
-```bash
-python main.py once
-```
-
-Fill in `config.json`:
+Copy and fill in `config.json`:
 
 ```json
 {
   "client_build_number": "2604Build20",
   "client_mastering_number": "2604Build20",
   "session_dir": "./session",
-  "amazon_places_region": "us-east-1",
-  "amazon_places_endpoint": "",
-  "places_db_path": "./session/places.db",
-  "places_cache_precision": 4,
   "poll_interval": 300,
   "family_members": {
     "Molly's iPhone": "Molly",
@@ -47,10 +68,6 @@ Fill in `config.json`:
 
 ### 3. Configure secrets
 
-You can store secrets in a plain `.env` file or use 1Password.
-
-#### Option A: Plain `.env` (default)
-
 Copy `.env.example` to `.env` and fill in your values:
 
 ```bash
@@ -61,78 +78,23 @@ Required keys:
 
 ```dotenv
 WEASLEY_APPLE_ID=you@example.com
-WEASLEY_TRMNL_API_KEY=your-trmnl-api-key
-WEASLEY_TRMNL_PLUGIN_UUID=your-plugin-uuid
-WEASLEY_AMAZON_PLACES_API_KEY=your-amazon-places-api-key
+WEASLEY_SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/ACCOUNT/weasley-raw-locations
+WEASLEY_API_URL=https://XXXXXX.execute-api.us-east-1.amazonaws.com/prod
+WEASLEY_API_KEY=your-api-key
 ```
 
 `WEASLEY_CLIENT_ID` is auto-generated if missing. `WEASLEY_DSID` is captured
 after successful authentication.
 
-#### Option B: 1Password
+#### 1Password integration
 
-Store secrets in 1Password and let the CLI inject them at runtime.
-
-1. Install the 1Password CLI:
-   ```bash
-   brew install 1password-cli
-   ```
-
-2. Create a vault called **Weasley** and add an item called **Weasley** with
-   these fields: `apple_id`, `trmnl_api_key`, `trmnl_plugin_uuid`,
-   `amazon_places_api_key`.
-
-3. The repo includes `.env.op` with `op://` secret references. Run with:
-   ```bash
-   op run --env-file=.env.op -- python main.py daemon
-   ```
-
-Dynamic secrets (`WEASLEY_DSID`, `WEASLEY_CLIENT_ID`) are auto-generated and
-persisted to `.env` locally — they don't need to be in 1Password. If `.env`
-doesn't exist yet, Weasley will create it on first run.
-
-### 4.5 Reverse geocoding
-
-Weasley resolves lat/lon to a user-visible location label in this order:
-
-1. Manual labels in a local SQLite DB (`places_db_path`, default `./session/places.db`)
-2. Cached API lookups in the same DB
-3. Amazon Places reverse geocoding API
-
-Use manual labels (with radius tolerance) via CLI:
+Store secrets in 1Password and use `op://` references in `.env.op`:
 
 ```bash
-python main.py place-add --name "Home" --lat 39.77365 --lon -75.59332 --radius 250
-python main.py place-list
-python main.py place-remove --name "Home"
-# or
-python main.py place-remove --id 1
+op run --env-file=.env.op -- python main.py daemon
 ```
 
-#### Per-user place overrides
-
-Places can be scoped to a specific family member with `--user`. This lets the
-same coordinates show different names depending on who is there.
-
-```bash
-# Global place — everyone sees "Jeremy's House"
-python main.py place-add --name "Jeremy's House" --lat 42.0 --lon -71.0 --radius 200
-
-# Jeremy sees "Home" instead (per-user override takes priority over global)
-python main.py place-add --name Home --lat 42.0 --lon -71.0 --radius 200 --user Jeremy
-
-# Jeremy-only place with no global equivalent — others see "Jeremy's Work"
-python main.py place-add --name Work --lat 42.1 --lon -71.1 --radius 200 --user Jeremy
-```
-
-Resolution order when displaying a location for a given person:
-
-1. **Per-user match** for that person — name as-is (e.g. Jeremy sees "Home")
-2. **Global match** — name as-is (e.g. Dennis sees "Jeremy's House")
-3. **Another user's place** — auto-prefixed (e.g. Dennis sees "Jeremy's Work")
-4. Cached API result → Amazon Places API → raw coordinates
-
-### 5. Authenticate
+### 4. Authenticate
 
 ```bash
 python main.py auth
@@ -140,58 +102,118 @@ python main.py auth
 
 A browser window will open. Log in to iCloud (including YubiKey if prompted).
 When you see the iCloud home screen, press Enter in the terminal.
-Weasley will then open iCloud Find; if Apple asks for your password again,
-complete that step and press Enter again when Find is fully loaded.
+The session is saved to `./session/` and typically lasts about a month.
 
-The session is saved to `./session/` — this only needs to be repeated when
-the session expires (roughly monthly based on observed cookie lifetimes).
-
-### 6. Run
+### 5. Run
 
 Single fetch:
 ```bash
 python main.py once
-# or with 1Password:
-op run --env-file=.env.op -- python main.py once
 ```
 
 Continuous polling:
 ```bash
 python main.py daemon
-# or with 1Password:
-op run --env-file=.env.op -- python main.py daemon
 ```
 
-## Architecture
+## Cloud Deployment
+
+The cloud pipeline is defined in `cloud/template.yaml` (AWS SAM).
+
+```bash
+cd cloud && ./deploy.sh
+```
+
+This deploys:
+- **SQS queue** (`weasley-raw-locations`) — receives raw events from desktop
+- **Location Processor Lambda** — resolves labels, detects triggers, stores state
+- **SNS topic** (`weasley-location-changes`) — fans out enriched events
+- **SQS buffer** (`weasley-trmnl-buffer`) — debounces per-member updates (15s window)
+- **TRMNL Consumer Lambda** — pushes all locations to TRMNL display
+- **REST API Lambda** (API Gateway) — locations and places CRUD
+- **DynamoDB tables** — locations, places, geocode-cache
+
+## REST API
+
+All requests require an `x-api-key` header.
+
+### Get all family member locations
+
+```bash
+curl -s -H "x-api-key: $WEASLEY_API_KEY" \
+  https://XXXXXX.execute-api.us-east-1.amazonaws.com/prod/locations
+```
+
+### Get all places
+
+```bash
+curl -s -H "x-api-key: $WEASLEY_API_KEY" \
+  https://XXXXXX.execute-api.us-east-1.amazonaws.com/prod/places
+```
+
+### Create a place
+
+```bash
+curl -s -X POST -H "x-api-key: $WEASLEY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Home", "lat": 42.3375, "lon": -71.1171, "radius_m": 250}' \
+  https://XXXXXX.execute-api.us-east-1.amazonaws.com/prod/places
+```
+
+Per-user place (only applies when resolving this person's location):
+
+```bash
+curl -s -X POST -H "x-api-key: $WEASLEY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Apartment", "lat": 42.387, "lon": -71.116, "radius_m": 200, "user": "Jeremy"}' \
+  https://XXXXXX.execute-api.us-east-1.amazonaws.com/prod/places
+```
+
+### Delete a place
+
+```bash
+curl -s -X DELETE -H "x-api-key: $WEASLEY_API_KEY" \
+  https://XXXXXX.execute-api.us-east-1.amazonaws.com/prod/places/PLACE_ID
+```
+
+## Desktop files
 
 ```
-main.py       — entry point, CLI, run modes
-config.py     — config.json + .env loading/saving
-auth.py       — Playwright session management, iCloud auth flow
-scraper.py    — validate → initClient → refreshClient API calls
-trmnl.py      — TRMNL webhook push
-geocoder.py   — manual labels + cache + Amazon reverse geocoding
-session/      — gitignored, persistent browser profile + saved cookies
-config.json   — gitignored local runtime settings
-.env          — gitignored credentials and dynamic IDs
-.env.op       — 1Password secret references (committed, safe — just pointers)
+main.py         — entry point: auth, scrape, publish to SQS
+config.py       — config.json + .env loading
+auth.py         — Playwright session management, iCloud auth flow
+scraper.py      — iCloud Find My API calls
+publisher.py    — SQS event publisher
+credentials.py  — macOS Keychain access
+session/        — gitignored, persistent browser profile + saved cookies
 ```
 
 ## Session lifetime
 
-Apple's iCloud session cookies appear to live roughly one month. When the
-session expires, Weasley will detect the 450 response and log a warning.
-Re-run `python main.py auth` to refresh.
+Apple's iCloud session cookies live roughly one month. When the session
+expires, Weasley detects the 450 response and logs a warning. Re-run
+`python main.py auth` to refresh.
 
 ## TRMNL plugin
 
 Create a custom TRMNL plugin and build a Liquid template using the
-`merge_variables` structure from `trmnl.py`. A sample template is TODO.
+`merge_variables` structure. Each push includes:
+
+```json
+{
+  "merge_variables": {
+    "members": [
+      {"name": "Molly", "lat": 42.34, "lon": -71.11, "battery_level": "85%",
+       "battery_status": "Charging", "last_seen": "03:45 PM", "location_label": "Home"}
+    ],
+    "updated_at": "03:45 PM",
+    "member_count": 1
+  }
+}
+```
 
 ## Notes
 
-- Weasley reads device locations from the iCloud Find My web interface.
-  Family members must be sharing their location with your Apple ID.
-- Reverse geocoding is supported via manual labels + local cache +
-  Amazon Places API.
-- The `session/` directory contains sensitive auth data. Don't commit it.
+- Family members must be sharing their location with your Apple ID.
+- The `session/` directory contains sensitive auth data — don't commit it.
+- Place resolution order: per-user manual place > global manual place > geocode cache > Amazon Places API.
