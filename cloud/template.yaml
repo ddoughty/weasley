@@ -222,6 +222,7 @@ Resources:
       Environment:
         Variables:
           API_KEY: !Ref ApiKeyValue
+          DISPLAY_TIMEZONE: !Ref DisplayTimezone
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref LocationsTable
@@ -233,6 +234,12 @@ Resources:
           Properties:
             ApiId: !Ref WeasleyHttpApi
             Path: /locations
+            Method: GET
+        GetDashboard:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /dashboard
             Method: GET
         GetPlaces:
           Type: HttpApi
