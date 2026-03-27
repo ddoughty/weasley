@@ -53,13 +53,44 @@ def run_once(config: Config) -> bool:
 
 
 def run_daemon(config: Config):
-    """Poll on a schedule indefinitely."""
+    """Poll on a schedule, aborting after repeated consecutive failures."""
+    from notifier import send_pushover
+
     log.info(f"Starting Weasley daemon, polling every {config.poll_interval}s.")
+    consecutive_failures = 0
+
     while True:
         try:
-            run_once(config)
+            success = run_once(config)
         except Exception as e:
             log.error(f"Unexpected error: {e}", exc_info=True)
+            success = False
+
+        if success:
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
+            log.warning(
+                "Consecutive failure %d/%d",
+                consecutive_failures,
+                config.max_consecutive_failures,
+            )
+
+            if consecutive_failures >= config.max_consecutive_failures:
+                msg = (
+                    f"Weasley daemon aborting after {consecutive_failures} "
+                    f"consecutive failures. Manual re-auth likely required. "
+                    f"Run: python main.py auth"
+                )
+                log.error(msg)
+                send_pushover(
+                    config,
+                    "Weasley: Auth Failure",
+                    msg,
+                    priority=1,
+                )
+                sys.exit(1)
+
         jitter = random.uniform(-1 / 6, 1 / 6)
         sleep_time = int(config.poll_interval * (1 + jitter))
         log.info(f"Sleeping {sleep_time}s (base {config.poll_interval}s ± jitter)...")
