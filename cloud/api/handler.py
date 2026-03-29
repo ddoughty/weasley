@@ -9,7 +9,7 @@ Routes:
   PUT    /places/{place_id}   — update a place
   DELETE /places/{place_id}   — delete a place
   GET    /dashboard           — human-readable HTML location view
-  GET    /places/manage       — HTML UI for managing place labels
+  GET    /manage-places       — HTML UI for managing place labels
 
 All requests require x-api-key header or ?key= query param matching the
 API_KEY env var.
@@ -56,7 +56,7 @@ def lambda_handler(event, context):
         return _get_locations()
     elif method == "GET" and path.rstrip("/") == "/prod/dashboard":
         return _get_dashboard(query_params)
-    elif method == "GET" and path.rstrip("/") == "/prod/places/manage":
+    elif method == "GET" and path.rstrip("/") == "/prod/manage-places":
         return _get_places_manage(query_params)
     elif method == "GET" and path.rstrip("/") == "/prod/places":
         return _get_places()
@@ -196,7 +196,7 @@ def _get_dashboard(query_params: dict = None):
 <body>
   <div class="container">
     <h1>The Weasley Clock</h1>
-    <div class="subtitle">Updated {now.strftime("%I:%M %p, %b %d")} · <a href="places/manage?key={escape(api_key)}" style="color:#e0c068">Manage Places</a></div>
+    <div class="subtitle">Updated {now.strftime("%I:%M %p, %b %d")} · <a href="manage-places?key={escape(api_key)}" style="color:#e0c068">Manage Places</a></div>
     {members_html}
   </div>
 </body>
@@ -517,7 +517,7 @@ def _get_places_manage(query_params: dict):
 
   <script>
     const API_KEY = "{escape(api_key)}";
-    const BASE = window.location.pathname.replace(/\\/places\\/manage\\/?$/, "");
+    const BASE = window.location.pathname.replace(/\\/manage-places\\/?$/, "");
 
     function headers() {{
       return {{"Content-Type": "application/json", "x-api-key": API_KEY}};

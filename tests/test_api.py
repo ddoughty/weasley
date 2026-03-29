@@ -432,7 +432,7 @@ class TestManagePlacesUI:
                 "location_label": "Home",
             }
         ]
-        event = _api_event("GET", "/prod/places/manage")
+        event = _api_event("GET", "/prod/manage-places")
         event["queryStringParameters"] = {"key": "test-secret-key"}
         result = lambda_handler(event, None)
 
@@ -457,7 +457,7 @@ class TestManagePlacesUI:
             }
         ]
         mock_locations.return_value = []
-        event = _api_event("GET", "/prod/places/manage")
+        event = _api_event("GET", "/prod/manage-places")
         event["queryStringParameters"] = {"key": "test-secret-key"}
         result = lambda_handler(event, None)
 
@@ -473,7 +473,7 @@ class TestManagePlacesUI:
 
         mock_places.return_value = []
         mock_locations.return_value = []
-        event = _api_event("GET", "/prod/places/manage")
+        event = _api_event("GET", "/prod/manage-places")
         event["queryStringParameters"] = {"key": "test-secret-key"}
         result = lambda_handler(event, None)
 
@@ -497,7 +497,7 @@ class TestManagePlacesUI:
             }
         ]
         mock_locations.return_value = []
-        event = _api_event("GET", "/prod/places/manage")
+        event = _api_event("GET", "/prod/manage-places")
         event["queryStringParameters"] = {"key": "test-secret-key"}
         result = lambda_handler(event, None)
 

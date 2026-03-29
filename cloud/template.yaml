@@ -269,7 +269,7 @@ Resources:
           Type: HttpApi
           Properties:
             ApiId: !Ref WeasleyHttpApi
-            Path: /places/manage
+            Path: /manage-places
             Method: GET
 
   WeasleyHttpApi:
