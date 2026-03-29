@@ -253,12 +253,24 @@ Resources:
             ApiId: !Ref WeasleyHttpApi
             Path: /places
             Method: POST
+        UpdatePlace:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /places/{place_id}
+            Method: PUT
         DeletePlace:
           Type: HttpApi
           Properties:
             ApiId: !Ref WeasleyHttpApi
             Path: /places/{place_id}
             Method: DELETE
+        ManagePlaces:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /manage-places
+            Method: GET
 
   WeasleyHttpApi:
     Type: AWS::Serverless::HttpApi

@@ -106,8 +106,9 @@ class TestGetPlaces:
 
 
 class TestCreatePlace:
+    @patch("api.handler.refresh_location_labels")
     @patch("api.handler.create_place")
-    def test_creates_place(self, mock_create):
+    def test_creates_place(self, mock_create, mock_refresh):
         from api.handler import lambda_handler
 
         mock_create.return_value = {
@@ -117,6 +118,7 @@ class TestCreatePlace:
             "lon": -71.07,
             "radius_m": 200.0,
         }
+        mock_refresh.return_value = []
         event = _api_event(
             "POST",
             "/prod/places",
@@ -126,13 +128,14 @@ class TestCreatePlace:
 
         assert result["statusCode"] == 201
         body = json.loads(result["body"])
-        assert body["name"] == "Office"
+        assert body["place"]["name"] == "Office"
         mock_create.assert_called_once_with(
             name="Office", lat=42.35, lon=-71.07, radius_m=200.0, user=None
         )
 
+    @patch("api.handler.refresh_location_labels")
     @patch("api.handler.create_place")
-    def test_creates_place_with_optional_fields(self, mock_create):
+    def test_creates_place_with_optional_fields(self, mock_create, mock_refresh):
         from api.handler import lambda_handler
 
         mock_create.return_value = {
@@ -143,6 +146,7 @@ class TestCreatePlace:
             "radius_m": 150.0,
             "user": "Dennis",
         }
+        mock_refresh.return_value = []
         event = _api_event(
             "POST",
             "/prod/places",
@@ -193,11 +197,13 @@ class TestCreatePlace:
 
 
 class TestDeletePlace:
+    @patch("api.handler.refresh_location_labels")
     @patch("api.handler.delete_place")
-    def test_deletes_place(self, mock_delete):
+    def test_deletes_place(self, mock_delete, mock_refresh):
         from api.handler import lambda_handler
 
         mock_delete.return_value = True
+        mock_refresh.return_value = []
         event = _api_event(
             "DELETE",
             "/prod/places/abc-123",
@@ -304,6 +310,250 @@ class TestDashboard:
 
         assert result["statusCode"] == 200
         assert result["headers"]["Content-Type"] == "text/html"
+
+
+class TestUpdatePlace:
+    @patch("api.handler.refresh_location_labels")
+    @patch("api.handler.update_place")
+    def test_updates_place(self, mock_update, mock_refresh):
+        from api.handler import lambda_handler
+
+        mock_update.return_value = {
+            "place_id": "abc-123",
+            "name": "New Name",
+            "lat": 42.36,
+            "lon": -71.06,
+            "radius_m": 200.0,
+        }
+        mock_refresh.return_value = []
+        event = _api_event(
+            "PUT",
+            "/prod/places/abc-123",
+            body={"name": "New Name"},
+            path_params={"place_id": "abc-123"},
+        )
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["place"]["name"] == "New Name"
+        assert body["label_changes"] == []
+        mock_update.assert_called_once_with("abc-123", {"name": "New Name"})
+
+    @patch("api.handler.refresh_location_labels")
+    @patch("api.handler.update_place")
+    def test_update_returns_label_changes(self, mock_update, mock_refresh):
+        from api.handler import lambda_handler
+
+        mock_update.return_value = {
+            "place_id": "abc-123",
+            "name": "Work",
+            "lat": 42.36,
+            "lon": -71.06,
+            "radius_m": 200.0,
+        }
+        mock_refresh.return_value = [
+            {"person": "Dennis", "old_label": "Office", "new_label": "Work"}
+        ]
+        event = _api_event(
+            "PUT",
+            "/prod/places/abc-123",
+            body={"name": "Work"},
+            path_params={"place_id": "abc-123"},
+        )
+        result = lambda_handler(event, None)
+
+        body = json.loads(result["body"])
+        assert len(body["label_changes"]) == 1
+        assert body["label_changes"][0]["new_label"] == "Work"
+
+    @patch("api.handler.update_place")
+    def test_update_not_found(self, mock_update):
+        from api.handler import lambda_handler
+
+        mock_update.return_value = None
+        event = _api_event(
+            "PUT",
+            "/prod/places/nonexistent",
+            body={"name": "X"},
+            path_params={"place_id": "nonexistent"},
+        )
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 404
+
+    def test_update_no_valid_fields(self):
+        from api.handler import lambda_handler
+
+        event = _api_event(
+            "PUT",
+            "/prod/places/abc-123",
+            body={"bogus": "field"},
+            path_params={"place_id": "abc-123"},
+        )
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 400
+
+    def test_update_invalid_lat(self):
+        from api.handler import lambda_handler
+
+        event = _api_event(
+            "PUT",
+            "/prod/places/abc-123",
+            body={"lat": "not-a-number"},
+            path_params={"place_id": "abc-123"},
+        )
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 400
+
+
+class TestManagePlacesUI:
+    @patch("api.handler.get_all_locations")
+    @patch("api.handler.get_all_places")
+    def test_returns_html(self, mock_places, mock_locations):
+        from api.handler import lambda_handler
+
+        mock_places.return_value = [
+            {
+                "place_id": "abc",
+                "name": "Home",
+                "lat": 42.36,
+                "lon": -71.06,
+                "radius_m": 250,
+            }
+        ]
+        mock_locations.return_value = [
+            {
+                "person": "Dennis",
+                "lat": 42.36,
+                "lon": -71.06,
+                "location_label": "Home",
+            }
+        ]
+        event = _api_event("GET", "/prod/manage-places")
+        event["queryStringParameters"] = {"key": "test-secret-key"}
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        assert result["headers"]["Content-Type"] == "text/html"
+        assert "Manage Places" in result["body"]
+        assert "Home" in result["body"]
+        assert "Dennis" in result["body"]
+
+    @patch("api.handler.get_all_locations")
+    @patch("api.handler.get_all_places")
+    def test_html_escapes_place_names(self, mock_places, mock_locations):
+        from api.handler import lambda_handler
+
+        mock_places.return_value = [
+            {
+                "place_id": "xss",
+                "name": '<script>alert("xss")</script>',
+                "lat": 0,
+                "lon": 0,
+                "radius_m": 100,
+            }
+        ]
+        mock_locations.return_value = []
+        event = _api_event("GET", "/prod/manage-places")
+        event["queryStringParameters"] = {"key": "test-secret-key"}
+        result = lambda_handler(event, None)
+
+        # The escaped version should appear as an input value
+        assert "&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;" in result["body"]
+        # The unescaped alert payload should not appear in the HTML
+        assert 'alert("xss")' not in result["body"]
+
+    @patch("api.handler.get_all_locations")
+    @patch("api.handler.get_all_places")
+    def test_empty_state(self, mock_places, mock_locations):
+        from api.handler import lambda_handler
+
+        mock_places.return_value = []
+        mock_locations.return_value = []
+        event = _api_event("GET", "/prod/manage-places")
+        event["queryStringParameters"] = {"key": "test-secret-key"}
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        assert "No places defined yet" in result["body"]
+        assert "No family members tracked yet" in result["body"]
+
+    @patch("api.handler.get_all_locations")
+    @patch("api.handler.get_all_places")
+    def test_per_user_places_shown(self, mock_places, mock_locations):
+        from api.handler import lambda_handler
+
+        mock_places.return_value = [
+            {
+                "place_id": "a",
+                "name": "Apartment",
+                "lat": 37.76,
+                "lon": -122.39,
+                "radius_m": 200,
+                "user": "Benjamin",
+            }
+        ]
+        mock_locations.return_value = []
+        event = _api_event("GET", "/prod/manage-places")
+        event["queryStringParameters"] = {"key": "test-secret-key"}
+        result = lambda_handler(event, None)
+
+        assert "Benjamin" in result["body"]
+        assert "user-tag" in result["body"]
+
+
+class TestCreatePlaceLabelRefresh:
+    @patch("api.handler.refresh_location_labels")
+    @patch("api.handler.create_place")
+    def test_create_returns_label_changes(self, mock_create, mock_refresh):
+        from api.handler import lambda_handler
+
+        mock_create.return_value = {
+            "place_id": "new",
+            "name": "Office",
+            "lat": 42.35,
+            "lon": -71.07,
+            "radius_m": 200.0,
+        }
+        mock_refresh.return_value = [
+            {"person": "Dennis", "old_label": "123 Main St", "new_label": "Office"}
+        ]
+        event = _api_event(
+            "POST",
+            "/prod/places",
+            body={"name": "Office", "lat": 42.35, "lon": -71.07},
+        )
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 201
+        body = json.loads(result["body"])
+        assert body["place"]["name"] == "Office"
+        assert len(body["label_changes"]) == 1
+
+
+class TestDeletePlaceLabelRefresh:
+    @patch("api.handler.refresh_location_labels")
+    @patch("api.handler.delete_place")
+    def test_delete_returns_label_changes(self, mock_delete, mock_refresh):
+        from api.handler import lambda_handler
+
+        mock_delete.return_value = True
+        mock_refresh.return_value = []
+        event = _api_event(
+            "DELETE",
+            "/prod/places/abc-123",
+            path_params={"place_id": "abc-123"},
+        )
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["deleted"] == "abc-123"
+        assert "label_changes" in body
+        mock_refresh.assert_called_once()
 
 
 class TestRouting:
