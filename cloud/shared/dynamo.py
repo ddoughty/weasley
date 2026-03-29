@@ -127,6 +127,23 @@ def create_place(
     return _decimal_to_float(item)
 
 
+def update_place(place_id: str, updates: dict) -> Optional[dict]:
+    """Update an existing place. Returns the updated item or None if not found."""
+    table = _get_dynamodb().Table(PLACES_TABLE)
+    existing = table.get_item(Key={"place_id": place_id}).get("Item")
+    if not existing:
+        return None
+    for key, value in updates.items():
+        if key == "place_id":
+            continue
+        existing[key] = _float_to_decimal(value) if value is not None else value
+    # Remove 'user' key entirely if set to None (makes it a global place)
+    if "user" in updates and updates["user"] is None:
+        existing.pop("user", None)
+    table.put_item(Item=existing)
+    return _decimal_to_float(existing)
+
+
 def delete_place(place_id: str) -> bool:
     """Delete a place by ID. Returns True if deleted."""
     table = _get_dynamodb().Table(PLACES_TABLE)
@@ -233,6 +250,34 @@ def put_geocode_cache(lat_lon_key: str, label: str, source: str = "amazon") -> N
 # ---------------------------------------------------------------------------
 # Haversine distance
 # ---------------------------------------------------------------------------
+
+
+def refresh_location_labels() -> list[dict]:
+    """Re-resolve location labels for all tracked people using current places.
+
+    Returns a list of dicts describing what changed:
+      [{"person": "X", "old_label": "A", "new_label": "B"}, ...]
+    """
+    locations = get_all_locations()
+    changes = []
+    for loc in locations:
+        person = loc.get("person")
+        lat = loc.get("lat")
+        lon = loc.get("lon")
+        if person is None or lat is None or lon is None:
+            continue
+        old_label = loc.get("location_label", "Unknown")
+        new_label = lookup_manual_place(lat, lon, for_user=person)
+        if new_label is None:
+            # No manual place matches — don't overwrite geocoded labels
+            continue
+        if new_label != old_label:
+            loc["location_label"] = new_label
+            put_location(person, {k: v for k, v in loc.items() if k != "person"})
+            changes.append(
+                {"person": person, "old_label": old_label, "new_label": new_label}
+            )
+    return changes
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
