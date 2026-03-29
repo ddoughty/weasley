@@ -160,6 +160,13 @@ class Config:
     api_url: str = ""
     api_key: str = ""
 
+    # Pushover notifications
+    pushover_user_key: str = ""
+    pushover_app_token: str = ""
+
+    # Daemon failure threshold
+    max_consecutive_failures: int = 3
+
     # Family members to track: maps iCloud device name -> display name
     # e.g. {"Dennis's iPhone": "Dennis"}
     # If empty, all devices will be included.
@@ -177,6 +184,8 @@ class Config:
         "sqs_queue_url": "WEASLEY_SQS_QUEUE_URL",
         "api_url": "WEASLEY_API_URL",
         "api_key": "WEASLEY_API_KEY",
+        "pushover_user_key": "WEASLEY_PUSHOVER_USER_KEY",
+        "pushover_app_token": "WEASLEY_PUSHOVER_APP_TOKEN",
     }
 
     @classmethod
