@@ -29,6 +29,8 @@ config.json
 *.db
 *.db-shm
 *.db-wal
+*.log
+*.log.*
 
 # Secrets
 .env

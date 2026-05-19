@@ -8,6 +8,7 @@ Subsequent runs: ensure_session() restores the saved session and verifies
             it's still valid. Falls back to interactive_login() if not.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -38,6 +39,10 @@ class WeasleyAuth:
         self._fmip_base_url: Optional[str] = None
         self._fmf_base_url: Optional[str] = None
         self._fmip_cookie_ts: Optional[float] = None  # epoch when FMIP cookie last set
+        # Set when Apple's sign-in iframe stays present after we submit
+        # credentials. Signals that retrying within seconds is futile (and
+        # likely rate-limit fuel) so callers can break out of retry loops.
+        self._signin_was_rejected: bool = False
 
     # ------------------------------------------------------------------
     # Public interface
@@ -491,6 +496,7 @@ class WeasleyAuth:
                     ],
                 )
                 page = context.new_page()
+                self._attach_dialog_logger(page)
                 page.goto(ICLOUD_URL, wait_until="domcontentloaded", timeout=60000)
 
                 # Detect whether we're on a sign-in page or already logged in.
@@ -703,6 +709,7 @@ class WeasleyAuth:
                 frame.wait_for_selector(password_sel, timeout=20000)
             except Exception:
                 log.warning("[tier-3] password field did not appear within 10s")
+                self._capture_failure_state(page, "tier3-no-password-field")
                 return False
 
             password_input = frame.locator(password_sel)
@@ -753,6 +760,8 @@ class WeasleyAuth:
                     "[tier-3] sign-in form still present after submitting — "
                     "credentials may be wrong or 2FA required"
                 )
+                self._capture_failure_state(page, "tier3-iframe-still-present")
+                self._signin_was_rejected = True
                 return False
 
             log.info("[tier-3] sign-in form submitted, now at: %s", page.url)
@@ -856,20 +865,22 @@ class WeasleyAuth:
         FMIP auth cookies without forcing a full re-auth.
 
         Retries up to *max_attempts* times if the FMIP cookie is not minted.
+        Always headless: a visible Chromium launch against a recently-closed
+        persistent profile SIGTRAPs reliably on macOS and only generates
+        CrashReporter dialogs. Interactive re-auth has its own path.
         """
         for attempt in range(1, max_attempts + 1):
-            headless = attempt < max_attempts  # visible on final attempt only
+            self._signin_was_rejected = False
             log.info(
-                "[refresh-browser] attempt %d/%d (headless=%s)",
+                "[refresh-browser] attempt %d/%d (headless=True)",
                 attempt,
                 max_attempts,
-                headless,
             )
             try:
                 with sync_playwright() as p:
                     context = p.chromium.launch_persistent_context(
                         user_data_dir=self.config.session_dir,
-                        headless=headless,
+                        headless=True,
                         args=[
                             "--disable-blink-features=AutomationControlled",
                             "--disable-site-isolation-trials",
@@ -891,12 +902,85 @@ class WeasleyAuth:
                     "[refresh-browser] FMIP cookie obtained on attempt %d", attempt
                 )
                 return True
+
+            if self._signin_was_rejected:
+                log.warning(
+                    "[refresh-browser] attempt %d: Apple rejected the sign-in "
+                    "submission — not retrying (would be rate-limit fuel)",
+                    attempt,
+                )
+                return False
+
             log.warning(
                 "[refresh-browser] attempt %d completed but FMIP cookie still absent",
                 attempt,
             )
         log.warning("[refresh-browser] all %d attempts exhausted", max_attempts)
         return False
+
+    def _capture_failure_state(self, page, label: str) -> None:
+        """
+        Save a full-page screenshot + frame innerText to <session_dir>/failures/.
+        Apple's sign-in iframe is cross-origin from www.icloud.com, so logs
+        alone can't show what error/challenge Apple is presenting. Playwright
+        can still read the frame DOM via the automation API.
+        """
+        try:
+            failures_dir = os.path.join(self.config.session_dir, "failures")
+            os.makedirs(failures_dir, exist_ok=True)
+            stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+            base = os.path.join(failures_dir, f"{label}-{stamp}")
+
+            try:
+                page.screenshot(path=f"{base}.png", full_page=True)
+                log.info("[capture] screenshot -> %s.png", base)
+            except Exception as e:
+                log.warning("[capture] screenshot failed: %s", e)
+
+            lines = [f"page_url: {page.url}", ""]
+            for i, frame in enumerate(page.frames):
+                lines.append(f"frame[{i}]: name={frame.name!r} url={frame.url}")
+                try:
+                    text = frame.evaluate(
+                        "() => (document.body && document.body.innerText) || ''"
+                    )
+                except Exception as e:
+                    lines.append(f"  innerText extract failed: {e}")
+                    lines.append("")
+                    continue
+                if isinstance(text, str) and text.strip():
+                    snippet = text.strip()[:2000]
+                    lines.append("  innerText (first 2000 chars):")
+                    for ln in snippet.splitlines():
+                        lines.append(f"    {ln}")
+                else:
+                    lines.append("  innerText: <empty>")
+                lines.append("")
+
+            with open(f"{base}.txt", "w") as f:
+                f.write("\n".join(lines))
+            log.info("[capture] frame text -> %s.txt", base)
+        except Exception as e:
+            log.warning("[capture] failed to write artifacts: %s", e)
+
+    def _attach_dialog_logger(self, page) -> None:
+        """Log + dismiss any JS dialogs that would otherwise block the page."""
+
+        def _handler(dialog):
+            try:
+                log.warning(
+                    "[dialog] type=%s message=%r",
+                    dialog.type,
+                    dialog.message,
+                )
+                dialog.dismiss()
+            except Exception as e:
+                log.warning("[dialog] error handling dialog: %s", e)
+
+        try:
+            page.on("dialog", _handler)
+        except Exception as e:
+            log.warning("[dialog] could not attach handler: %s", e)
 
     def _prime_findmy_cookie_in_context(self, context, interactive: bool):
         # Snapshot cookies before priming to detect changes
@@ -912,6 +996,7 @@ class WeasleyAuth:
         )
 
         page = context.new_page()
+        self._attach_dialog_logger(page)
         try:
             log.info("[prime] navigating to iCloud Find...")
             page.goto(ICLOUD_FIND_URL, wait_until="domcontentloaded", timeout=60000)

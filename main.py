@@ -9,17 +9,48 @@ place management are handled by the cloud pipeline.
 
 import argparse
 import logging
+import logging.handlers
 import random
 import sys
 import time
 
 from config import Config
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+LOG_FILE_PATH = "weasley.log"
+LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
+LOG_FILE_BACKUP_COUNT = 10
+
+
+def _setup_logging(log_path: str = LOG_FILE_PATH) -> None:
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
+        return
+
+    if not root.handlers:
+        console = logging.StreamHandler()
+        console.setFormatter(
+            logging.Formatter(
+                fmt="%(asctime)s [%(levelname)s] %(message)s",
+                datefmt="%H:%M:%S",
+            )
+        )
+        root.addHandler(console)
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_path,
+        maxBytes=LOG_FILE_MAX_BYTES,
+        backupCount=LOG_FILE_BACKUP_COUNT,
+    )
+    file_handler.setFormatter(
+        logging.Formatter(
+            fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+    )
+    root.addHandler(file_handler)
+
+
+_setup_logging()
 log = logging.getLogger("weasley")
 
 
