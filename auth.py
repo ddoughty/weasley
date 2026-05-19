@@ -39,6 +39,10 @@ class WeasleyAuth:
         self._fmip_base_url: Optional[str] = None
         self._fmf_base_url: Optional[str] = None
         self._fmip_cookie_ts: Optional[float] = None  # epoch when FMIP cookie last set
+        # Set when Apple's sign-in iframe stays present after we submit
+        # credentials. Signals that retrying within seconds is futile (and
+        # likely rate-limit fuel) so callers can break out of retry loops.
+        self._signin_was_rejected: bool = False
 
     # ------------------------------------------------------------------
     # Public interface
@@ -757,6 +761,7 @@ class WeasleyAuth:
                     "credentials may be wrong or 2FA required"
                 )
                 self._capture_failure_state(page, "tier3-iframe-still-present")
+                self._signin_was_rejected = True
                 return False
 
             log.info("[tier-3] sign-in form submitted, now at: %s", page.url)
@@ -860,20 +865,22 @@ class WeasleyAuth:
         FMIP auth cookies without forcing a full re-auth.
 
         Retries up to *max_attempts* times if the FMIP cookie is not minted.
+        Always headless: a visible Chromium launch against a recently-closed
+        persistent profile SIGTRAPs reliably on macOS and only generates
+        CrashReporter dialogs. Interactive re-auth has its own path.
         """
         for attempt in range(1, max_attempts + 1):
-            headless = attempt < max_attempts  # visible on final attempt only
+            self._signin_was_rejected = False
             log.info(
-                "[refresh-browser] attempt %d/%d (headless=%s)",
+                "[refresh-browser] attempt %d/%d (headless=True)",
                 attempt,
                 max_attempts,
-                headless,
             )
             try:
                 with sync_playwright() as p:
                     context = p.chromium.launch_persistent_context(
                         user_data_dir=self.config.session_dir,
-                        headless=headless,
+                        headless=True,
                         args=[
                             "--disable-blink-features=AutomationControlled",
                             "--disable-site-isolation-trials",
@@ -895,6 +902,15 @@ class WeasleyAuth:
                     "[refresh-browser] FMIP cookie obtained on attempt %d", attempt
                 )
                 return True
+
+            if self._signin_was_rejected:
+                log.warning(
+                    "[refresh-browser] attempt %d: Apple rejected the sign-in "
+                    "submission — not retrying (would be rate-limit fuel)",
+                    attempt,
+                )
+                return False
+
             log.warning(
                 "[refresh-browser] attempt %d completed but FMIP cookie still absent",
                 attempt,
