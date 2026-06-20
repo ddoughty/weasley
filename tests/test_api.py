@@ -13,6 +13,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "cloud"))
 @pytest.fixture(autouse=True)
 def _mock_env(monkeypatch):
     monkeypatch.setenv("API_KEY", "test-secret-key")
+    monkeypatch.setenv(
+        "SESSION_SIGNING_KEY", "test-session-signing-key-at-least-32-bytes"
+    )
     monkeypatch.setenv("LOCATIONS_TABLE", "weasley-locations")
     monkeypatch.setenv("PLACES_TABLE", "weasley-places")
     monkeypatch.setenv("DISPLAY_TIMEZONE", "America/New_York")
@@ -219,7 +222,7 @@ class TestDeletePlace:
 
 class TestQueryParamAuth:
     @patch("api.handler.get_all_locations")
-    def test_auth_via_query_param(self, mock_get):
+    def test_query_param_is_not_accepted(self, mock_get):
         from api.handler import lambda_handler
 
         mock_get.return_value = []
@@ -227,7 +230,7 @@ class TestQueryParamAuth:
         event["headers"] = {}
         event["queryStringParameters"] = {"key": "test-secret-key"}
         result = lambda_handler(event, None)
-        assert result["statusCode"] == 200
+        assert result["statusCode"] == 401
 
     def test_wrong_query_param_returns_401(self):
         from api.handler import lambda_handler
@@ -259,7 +262,7 @@ class TestDashboard:
         result = lambda_handler(event, None)
 
         assert result["statusCode"] == 200
-        assert result["headers"]["Content-Type"] == "text/html"
+        assert result["headers"]["Content-Type"] == "text/html; charset=utf-8"
         assert "Dennis" in result["body"]
         assert "Home" in result["body"]
         assert "85%" in result["body"]
@@ -299,7 +302,7 @@ class TestDashboard:
         assert "&lt;img " in result["body"]
 
     @patch("api.handler.get_all_locations")
-    def test_dashboard_via_query_param_auth(self, mock_get):
+    def test_dashboard_query_param_redirects_to_login(self, mock_get):
         from api.handler import lambda_handler
 
         mock_get.return_value = []
@@ -308,8 +311,8 @@ class TestDashboard:
         event["queryStringParameters"] = {"key": "test-secret-key"}
         result = lambda_handler(event, None)
 
-        assert result["statusCode"] == 200
-        assert result["headers"]["Content-Type"] == "text/html"
+        assert result["statusCode"] == 303
+        assert result["headers"]["Location"] == "/prod/login"
 
 
 class TestUpdatePlace:
@@ -437,7 +440,7 @@ class TestManagePlacesUI:
         result = lambda_handler(event, None)
 
         assert result["statusCode"] == 200
-        assert result["headers"]["Content-Type"] == "text/html"
+        assert result["headers"]["Content-Type"] == "text/html; charset=utf-8"
         assert "Manage Places" in result["body"]
         assert "Home" in result["body"]
         assert "Dennis" in result["body"]

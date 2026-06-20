@@ -52,10 +52,38 @@ Parameters:
     NoEcho: true
     Description: API key for the Weasley REST API.
 
+  SessionSigningKey:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Random key used to sign browser admin sessions.
+
+  AdminDomainName:
+    Type: String
+    Default: weasley-admin.doughty.org
+    Description: Custom hostname for the browser admin UI.
+
+  AdminCertificateArn:
+    Type: String
+    Default: ""
+    Description: ACM certificate ARN for the admin hostname; blank skips domain setup.
+
+  DisableExecuteApiEndpoint:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Disable the default execute-api endpoint after custom-domain validation.
+
   CachePrecision:
     Type: Number
     Default: 4
     Description: Decimal places for geocode cache coordinate rounding.
+
+Conditions:
+  ConfigureAdminDomain: !Not [!Equals [!Ref AdminCertificateArn, ""]]
+  DisableDefaultEndpoint: !Equals [!Ref DisableExecuteApiEndpoint, "true"]
 
 Resources:
   # -----------------------------------------------------------------------
@@ -222,6 +250,7 @@ Resources:
       Environment:
         Variables:
           API_KEY: !Ref ApiKeyValue
+          SESSION_SIGNING_KEY: !Ref SessionSigningKey
           DISPLAY_TIMEZONE: !Ref DisplayTimezone
       Policies:
         - DynamoDBCrudPolicy:
@@ -229,6 +258,30 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref PlacesTable
       Events:
+        GetRoot:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /
+            Method: GET
+        GetLogin:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /login
+            Method: GET
+        PostLogin:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /login
+            Method: POST
+        PostLogout:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WeasleyHttpApi
+            Path: /logout
+            Method: POST
         GetLocations:
           Type: HttpApi
           Properties:
@@ -276,6 +329,26 @@ Resources:
     Type: AWS::Serverless::HttpApi
     Properties:
       StageName: prod
+      DisableExecuteApiEndpoint: !If [DisableDefaultEndpoint, true, false]
+
+  AdminDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Condition: ConfigureAdminDomain
+    Properties:
+      DomainName: !Ref AdminDomainName
+      DomainNameConfigurations:
+        - CertificateArn: !Ref AdminCertificateArn
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+
+  AdminApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: ConfigureAdminDomain
+    DependsOn: WeasleyHttpApiprodStage
+    Properties:
+      ApiId: !Ref WeasleyHttpApi
+      DomainName: !Ref AdminDomain
+      Stage: prod
 
 Outputs:
   SqsQueueUrl:
@@ -293,3 +366,13 @@ Outputs:
   ApiUrl:
     Description: Base URL for the Weasley REST API.
     Value: !Sub "https://${WeasleyHttpApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+
+  AdminUrl:
+    Condition: ConfigureAdminDomain
+    Description: Custom URL for the Weasley admin UI.
+    Value: !Sub "https://${AdminDomainName}"
+
+  AdminDomainTarget:
+    Condition: ConfigureAdminDomain
+    Description: DNS CNAME target for the custom admin hostname.
+    Value: !GetAtt AdminDomain.RegionalDomainName

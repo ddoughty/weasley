@@ -3,6 +3,10 @@ Weasley REST API Lambda — serves current locations and places CRUD
 via API Gateway HTTP API.
 
 Routes:
+  GET    /                    — redirect to the dashboard
+  GET    /login               — admin login form
+  POST   /login               — establish a browser session
+  POST   /logout              — clear a browser session
   GET    /locations           — all person locations (JSON)
   GET    /places              — all manual places (JSON)
   POST   /places              — create a place
@@ -11,17 +15,28 @@ Routes:
   GET    /dashboard           — human-readable HTML location view
   GET    /manage-places       — HTML UI for managing place labels
 
-All requests require x-api-key header or ?key= query param matching the
-API_KEY env var.
+API clients authenticate with the x-api-key header. Browser users exchange the
+same high-entropy secret for a signed, short-lived session cookie at /login.
 """
 
+import base64
 import json
 import logging
 import os
+import secrets
 from datetime import datetime
 from html import escape
+from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
+from api.auth import (
+    AuthContext,
+    authenticate,
+    clear_session_cookie,
+    create_session,
+    csrf_is_valid,
+    session_cookie,
+)
 from shared.dynamo import (
     create_place,
     delete_place,
@@ -35,41 +50,157 @@ log = logging.getLogger()
 log.setLevel(logging.INFO)
 
 API_KEY = os.environ.get("API_KEY", "")
+SESSION_SIGNING_KEY = os.environ.get("SESSION_SIGNING_KEY", "")
 DISPLAY_TIMEZONE = os.environ.get("DISPLAY_TIMEZONE", "America/New_York")
+
+HTML_ROUTES = {"GET /", "GET /dashboard", "GET /manage-places"}
+MUTATING_ROUTES = {
+    "POST /places",
+    "PUT /places/{place_id}",
+    "DELETE /places/{place_id}",
+}
 
 
 def lambda_handler(event, context):
     """API Gateway HTTP API v2 handler."""
-    # Authenticate — accept header or query parameter
-    headers = event.get("headers", {})
-    query_params = event.get("queryStringParameters") or {}
-    provided_key = headers.get("x-api-key", "") or query_params.get("key", "")
-    if not API_KEY or provided_key != API_KEY:
+    route_key = _route_key(event)
+    auth = authenticate(event, API_KEY, SESSION_SIGNING_KEY)
+
+    if route_key == "GET /login":
+        return _redirect(_url(event, "/dashboard")) if auth else _get_login()
+    if route_key == "POST /login":
+        return _post_login(event)
+
+    if auth is None:
+        if route_key in HTML_ROUTES:
+            return _redirect(_url(event, "/login"))
         return _response(401, {"error": "Unauthorized"})
 
-    route_key = event.get("routeKey", "")
-    method = event.get("requestContext", {}).get("http", {}).get("method", "")
-    path = event.get("requestContext", {}).get("http", {}).get("path", "")
+    if route_key == "POST /logout":
+        form = _parse_form_body(event)
+        if not csrf_is_valid(event, auth, form_token=form.get("csrf_token", "")):
+            return _response(403, {"error": "Invalid CSRF token"})
+        return _redirect(_url(event, "/login"), cookies=[clear_session_cookie()])
 
-    # Route dispatch
-    if method == "GET" and path.rstrip("/") == "/prod/locations":
+    if route_key in MUTATING_ROUTES and not csrf_is_valid(event, auth):
+        return _response(403, {"error": "Invalid CSRF token"})
+
+    if route_key == "GET /":
+        return _redirect(_url(event, "/dashboard"))
+    if route_key == "GET /locations":
         return _get_locations()
-    elif method == "GET" and path.rstrip("/") == "/prod/dashboard":
-        return _get_dashboard(query_params)
-    elif method == "GET" and path.rstrip("/") == "/prod/manage-places":
-        return _get_places_manage(query_params)
-    elif method == "GET" and path.rstrip("/") == "/prod/places":
+    if route_key == "GET /dashboard":
+        return _get_dashboard(auth)
+    if route_key == "GET /manage-places":
+        return _get_places_manage(auth)
+    if route_key == "GET /places":
         return _get_places()
-    elif method == "POST" and path.rstrip("/") == "/prod/places":
+    if route_key == "POST /places":
         return _create_place(event)
-    elif method == "PUT" and path.startswith("/prod/places/"):
+    if route_key == "PUT /places/{place_id}":
         place_id = event.get("pathParameters", {}).get("place_id", "")
         return _update_place(event, place_id)
-    elif method == "DELETE" and path.startswith("/prod/places/"):
+    if route_key == "DELETE /places/{place_id}":
         place_id = event.get("pathParameters", {}).get("place_id", "")
         return _delete_place(place_id)
-    else:
-        return _response(404, {"error": "Not found"})
+    return _response(404, {"error": "Not found"})
+
+
+def _route_key(event: dict) -> str:
+    """Return a stable route key for default and custom API hostnames."""
+    route_key = event.get("routeKey", "")
+    if route_key and route_key != "$default":
+        return route_key
+
+    request = event.get("requestContext", {}).get("http", {})
+    method = request.get("method", "")
+    path = request.get("path", "").rstrip("/") or "/"
+    if path == "/prod" or path.startswith("/prod/"):
+        path = path[5:] or "/"
+    if event.get("pathParameters", {}).get("place_id") and path.startswith("/places/"):
+        path = "/places/{place_id}"
+    return f"{method} {path}"
+
+
+def _url(event: dict, path: str) -> str:
+    """Build a URL that works during both staged and custom-domain rollout."""
+    request_path = event.get("requestContext", {}).get("http", {}).get("path", "")
+    base_path = (
+        "/prod" if request_path == "/prod" or request_path.startswith("/prod/") else ""
+    )
+    return f"{base_path}{path}"
+
+
+def _get_login(error: str = "") -> dict:
+    """Render the browser login form."""
+    error_html = f'<div class="error">{escape(error)}</div>' if error else ""
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — Weasley Clock</title>
+  <style>
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0; min-height: 100vh; display: grid; place-items: center;
+      padding: 1rem; background: #1a1a2e; color: #eee;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }}
+    main {{ width: min(100%, 380px); background: #16213e; padding: 2rem; border-radius: 12px; }}
+    h1 {{ margin: 0 0 0.4rem; color: #e0c068; font-size: 1.7rem; }}
+    p {{ color: #aaa; margin: 0 0 1.5rem; }}
+    label {{ display: block; margin-bottom: 0.4rem; color: #ccc; }}
+    input {{
+      width: 100%; padding: 0.7rem; border: 1px solid #444; border-radius: 6px;
+      background: #0f1a30; color: #fff; font-size: 1rem;
+    }}
+    button {{
+      width: 100%; margin-top: 1rem; padding: 0.7rem; border: 0; border-radius: 6px;
+      background: #e0c068; color: #1a1a2e; font-size: 1rem; font-weight: 600;
+    }}
+    .error {{ margin-bottom: 1rem; color: #ff9b94; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>The Weasley Clock</h1>
+    <p>Enter the admin secret to continue.</p>
+    {error_html}
+    <form method="post" action="login">
+      <label for="admin-secret">Admin secret</label>
+      <input id="admin-secret" name="admin_secret" type="password" required autofocus autocomplete="current-password">
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>"""
+    return _html_response(200, html)
+
+
+def _post_login(event: dict) -> dict:
+    """Exchange the shared admin secret for a signed browser session."""
+    if not API_KEY or not SESSION_SIGNING_KEY:
+        log.error("Admin login is unavailable because authentication is not configured")
+        return _html_response(503, "Authentication is not configured")
+
+    provided_secret = _parse_form_body(event).get("admin_secret", "")
+    if not provided_secret or not secrets.compare_digest(provided_secret, API_KEY):
+        log.warning("Admin login rejected")
+        return _get_login("The admin secret was not accepted.") | {"statusCode": 401}
+
+    token, _ = create_session(SESSION_SIGNING_KEY)
+    return _redirect(_url(event, "/dashboard"), cookies=[session_cookie(token)])
+
+
+def _parse_form_body(event: dict) -> dict[str, str]:
+    body = event.get("body") or ""
+    if event.get("isBase64Encoded"):
+        try:
+            body = base64.b64decode(body).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return {}
+    return {key: values[-1] for key, values in parse_qs(body).items() if values}
 
 
 def _get_locations():
@@ -78,10 +209,8 @@ def _get_locations():
     return _response(200, locations)
 
 
-def _get_dashboard(query_params: dict = None):
+def _get_dashboard(auth: AuthContext):
     """Render an HTML dashboard of all family member locations."""
-    query_params = query_params or {}
-    api_key = query_params.get("key", "")
     locations = get_all_locations()
     tz = ZoneInfo(DISPLAY_TIMEZONE)
     now = datetime.now(tz)
@@ -158,6 +287,12 @@ def _get_dashboard(query_params: dict = None):
       font-size: 0.85rem;
       margin-bottom: 2rem;
     }}
+    .subtitle a {{ color: #e0c068; }}
+    .logout {{ display: inline; }}
+    .logout button {{
+      border: 0; padding: 0; background: none; color: #e0c068;
+      text-decoration: underline; cursor: pointer; font: inherit;
+    }}
     .member-card {{
       background: #16213e;
       border-radius: 12px;
@@ -196,17 +331,20 @@ def _get_dashboard(query_params: dict = None):
 <body>
   <div class="container">
     <h1>The Weasley Clock</h1>
-    <div class="subtitle">Updated {now.strftime("%I:%M %p, %b %d")} · <a href="manage-places?key={escape(api_key)}" style="color:#e0c068">Manage Places</a></div>
+    <div class="subtitle">
+      Updated {now.strftime("%I:%M %p, %b %d")} ·
+      <a href="manage-places">Manage Places</a> ·
+      <form class="logout" method="post" action="logout">
+        <input type="hidden" name="csrf_token" value="{escape(auth.csrf_token or '')}">
+        <button type="submit">Sign out</button>
+      </form>
+    </div>
     {members_html}
   </div>
 </body>
 </html>"""
 
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "text/html"},
-        "body": html,
-    }
+    return _html_response(200, html)
 
 
 def _battery_icon(level, status):
@@ -314,11 +452,12 @@ def _delete_place(place_id: str):
     return _response(200, {"deleted": place_id, "label_changes": changes})
 
 
-def _get_places_manage(query_params: dict):
+def _get_places_manage(auth: AuthContext):
     """Render an HTML UI for managing place labels."""
     places = get_all_places()
     locations = get_all_locations()
-    api_key = query_params.get("key", "")
+    nonce = secrets.token_urlsafe(18)
+    csrf_token = escape(auth.csrf_token or "")
 
     # Sort places: global first, then by user, then by name
     places.sort(key=lambda p: (p.get("user") or "", p.get("name", "")))
@@ -346,8 +485,8 @@ def _get_places_manage(query_params: dict):
           <td><input type="number" class="field-lon" value="{lon}" step="0.0001"></td>
           <td><input type="number" class="field-radius" value="{radius}" step="10" min="10"></td>
           <td class="actions">
-            <button class="btn btn-save" onclick="savePlace(this)">Save</button>
-            <button class="btn btn-delete" onclick="deletePlace(this)">Delete</button>
+            <button class="btn btn-save" data-action="save">Save</button>
+            <button class="btn btn-delete" data-action="delete">Delete</button>
           </td>
         </tr>"""
 
@@ -361,12 +500,12 @@ def _get_places_manage(query_params: dict):
     for loc in sorted(locations, key=lambda l: l.get("person", "")):
         name = escape(loc.get("person", "Unknown"))
         label = escape(loc.get("location_label", "Unknown"))
-        lat = loc.get("lat", 0)
-        lon = loc.get("lon", 0)
+        lat = escape(str(loc.get("lat", 0)))
+        lon = escape(str(loc.get("lon", 0)))
         member_cards += f"""
         <div class="member-chip">
           <strong>{name}</strong> &mdash; {label}
-          <button class="btn btn-small" onclick="prefillFromMember({lat}, {lon}, '{name}')">
+          <button class="btn btn-small" data-action="prefill" data-lat="{lat}" data-lon="{lon}" data-person="{name}">
             Name this location
           </button>
         </div>"""
@@ -462,7 +601,7 @@ def _get_places_manage(query_params: dict):
 <body>
   <div class="container">
     <h1>Manage Places</h1>
-    <div class="subtitle"><a href="dashboard?key={escape(api_key)}">Back to Dashboard</a></div>
+    <div class="subtitle"><a href="dashboard">Back to Dashboard</a></div>
 
     <h2>Current Family Locations</h2>
     {member_cards}
@@ -508,19 +647,19 @@ def _get_places_manage(query_params: dict):
         <input type="number" id="new-radius" value="200" step="10" min="10">
       </div>
       <div style="display:flex;align-items:end;">
-        <button class="btn btn-create" onclick="createPlace()">Create Place</button>
+        <button class="btn btn-create" id="create-place">Create Place</button>
       </div>
     </div>
   </div>
 
   <div class="toast" id="toast"></div>
 
-  <script>
-    const API_KEY = "{escape(api_key)}";
+  <script nonce="{nonce}">
+    const CSRF_TOKEN = "{csrf_token}";
     const BASE = window.location.pathname.replace(/\\/manage-places\\/?$/, "");
 
     function headers() {{
-      return {{"Content-Type": "application/json", "x-api-key": API_KEY}};
+      return {{"Content-Type": "application/json", "X-CSRF-Token": CSRF_TOKEN}};
     }}
 
     function toast(msg, isError) {{
@@ -541,7 +680,7 @@ def _get_places_manage(query_params: dict):
         radius_m: parseFloat(row.querySelector(".field-radius").value),
       }};
       try {{
-        const resp = await fetch(BASE + "/places/" + id + "?key=" + API_KEY, {{
+        const resp = await fetch(BASE + "/places/" + id, {{
           method: "PUT", headers: headers(), body: JSON.stringify(body),
         }});
         const data = await resp.json();
@@ -555,9 +694,10 @@ def _get_places_manage(query_params: dict):
         // Update the scope tag
         const user = body.user || "";
         const scopeTd = row.children[1];
-        scopeTd.innerHTML = user
-          ? "<span class='tag user-tag'>" + user + "</span>"
-          : "<span class='tag global-tag'>Everyone</span>";
+        const scopeTag = document.createElement("span");
+        scopeTag.className = user ? "tag user-tag" : "tag global-tag";
+        scopeTag.textContent = user || "Everyone";
+        scopeTd.replaceChildren(scopeTag);
       }} catch (e) {{
         toast("Network error", true);
       }}
@@ -569,7 +709,7 @@ def _get_places_manage(query_params: dict):
       const name = row.querySelector(".field-name").value;
       if (!confirm("Delete place '" + name + "'?")) return;
       try {{
-        const resp = await fetch(BASE + "/places/" + id + "?key=" + API_KEY, {{
+        const resp = await fetch(BASE + "/places/" + id, {{
           method: "DELETE", headers: headers(),
         }});
         if (!resp.ok) {{ toast("Failed to delete", true); return; }}
@@ -597,7 +737,7 @@ def _get_places_manage(query_params: dict):
         return;
       }}
       try {{
-        const resp = await fetch(BASE + "/places?key=" + API_KEY, {{
+        const resp = await fetch(BASE + "/places", {{
           method: "POST", headers: headers(),
           body: JSON.stringify({{ name, lat, lon, radius_m, user }}),
         }});
@@ -622,21 +762,73 @@ def _get_places_manage(query_params: dict):
       document.getElementById("new-name").focus();
       toast("Coordinates set from " + person + "'s location — enter a name");
     }}
+
+    document.querySelectorAll('[data-action="save"]').forEach((button) => {{
+      button.addEventListener("click", () => savePlace(button));
+    }});
+    document.querySelectorAll('[data-action="delete"]').forEach((button) => {{
+      button.addEventListener("click", () => deletePlace(button));
+    }});
+    document.querySelectorAll('[data-action="prefill"]').forEach((button) => {{
+      button.addEventListener("click", () => prefillFromMember(
+        parseFloat(button.dataset.lat),
+        parseFloat(button.dataset.lon),
+        button.dataset.person,
+      ));
+    }});
+    document.getElementById("create-place").addEventListener("click", createPlace);
   </script>
 </body>
 </html>"""
 
+    return _html_response(200, html, script_nonce=nonce)
+
+
+def _security_headers(content_type: str, script_nonce: str = "") -> dict[str, str]:
+    script_source = f"'nonce-{script_nonce}'" if script_nonce else "'none'"
     return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "text/html"},
+        "Content-Type": content_type,
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": (
+            "default-src 'none'; "
+            f"script-src {script_source}; "
+            "style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; "
+            "base-uri 'none'; frame-ancestors 'none'"
+        ),
+        "Permissions-Policy": "geolocation=(), camera=(), microphone=()",
+        "Referrer-Policy": "no-referrer",
+        "Strict-Transport-Security": "max-age=31536000",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+    }
+
+
+def _html_response(status_code: int, html: str, script_nonce: str = "") -> dict:
+    return {
+        "statusCode": status_code,
+        "headers": _security_headers("text/html; charset=utf-8", script_nonce),
         "body": html,
     }
+
+
+def _redirect(location: str, cookies: list[str] | None = None) -> dict:
+    response = {
+        "statusCode": 303,
+        "headers": {
+            **_security_headers("text/plain; charset=utf-8"),
+            "Location": location,
+        },
+        "body": "",
+    }
+    if cookies:
+        response["cookies"] = cookies
+    return response
 
 
 def _response(status_code: int, body) -> dict:
     """Build an API Gateway v2 response."""
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
+        "headers": _security_headers("application/json"),
         "body": json.dumps(body),
     }

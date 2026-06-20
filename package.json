@@ -1,0 +1,8 @@
+{
+  "name": "weasley",
+  "private": true,
+  "scripts": {
+    "lint:python": "pipenv run black --check . && pipenv run isort --profile black --check-only cloud/api tests/test_api.py tests/test_api_auth.py",
+    "test:python": "pipenv run pytest"
+  }
+}
