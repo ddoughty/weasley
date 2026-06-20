@@ -13,9 +13,9 @@ import logging
 import os
 import re
 import time
-from urllib.parse import urlparse
 import uuid
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -66,14 +66,7 @@ class WeasleyAuth:
         log.info("When you can see the iCloud home screen, press Enter here.")
 
         with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=self.config.session_dir,
-                headless=False,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-site-isolation-trials",
-                ],
-            )
+            context = self._launch_browser_context(p, headless=False)
             page = context.new_page()
             page.goto(ICLOUD_URL)
 
@@ -222,6 +215,18 @@ class WeasleyAuth:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _launch_browser_context(self, playwright, *, headless: bool):
+        """Launch the installed Chrome channel with the persistent profile."""
+        return playwright.chromium.launch_persistent_context(
+            user_data_dir=self.config.session_dir,
+            channel="chrome",
+            headless=headless,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-site-isolation-trials",
+            ],
+        )
 
     def _session_file(self) -> str:
         return os.path.join(self.config.session_dir, "weasley_session.json")
@@ -482,14 +487,7 @@ class WeasleyAuth:
         success = False
         try:
             with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=self.config.session_dir,
-                    headless=True,
-                    args=[
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-site-isolation-trials",
-                    ],
-                )
+                context = self._launch_browser_context(p, headless=True)
                 page = context.new_page()
                 page.goto(ICLOUD_URL, wait_until="domcontentloaded", timeout=60000)
 
@@ -867,14 +865,7 @@ class WeasleyAuth:
             )
             try:
                 with sync_playwright() as p:
-                    context = p.chromium.launch_persistent_context(
-                        user_data_dir=self.config.session_dir,
-                        headless=headless,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--disable-site-isolation-trials",
-                        ],
-                    )
+                    context = self._launch_browser_context(p, headless=headless)
                     self._prime_findmy_cookie_in_context(context, interactive=False)
                     self._cookies = context.cookies()
                     self._extract_fmip_url_from_cookies()
