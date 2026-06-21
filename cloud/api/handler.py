@@ -124,9 +124,20 @@ def _route_key(event: dict) -> str:
 
 def _url(event: dict, path: str) -> str:
     """Build a URL that works during both staged and custom-domain rollout."""
-    request_path = event.get("requestContext", {}).get("http", {}).get("path", "")
+    request_context = event.get("requestContext", {})
+    request_path = request_context.get("http", {}).get("path", "")
+    headers = {
+        str(key).lower(): str(value)
+        for key, value in (event.get("headers") or {}).items()
+        if value is not None
+    }
+    domain_name = str(request_context.get("domainName") or headers.get("host", ""))
+    uses_default_endpoint = not domain_name or ".execute-api." in domain_name
     base_path = (
-        "/prod" if request_path == "/prod" or request_path.startswith("/prod/") else ""
+        "/prod"
+        if uses_default_endpoint
+        and (request_path == "/prod" or request_path.startswith("/prod/"))
+        else ""
     )
     return f"{base_path}{path}"
 

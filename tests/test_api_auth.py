@@ -32,10 +32,14 @@ def _event(
     cookies=None,
     path=None,
     path_params=None,
+    domain_name=None,
 ):
+    request_context = {"http": {"method": method, "path": path or route}}
+    if domain_name:
+        request_context["domainName"] = domain_name
     event = {
         "routeKey": f"{method} {route}",
-        "requestContext": {"http": {"method": method, "path": path or route}},
+        "requestContext": request_context,
         "headers": headers or {},
         "pathParameters": path_params or {},
     }
@@ -132,12 +136,28 @@ class TestLoginFlow:
             "POST",
             "/login",
             path="/prod/login",
+            domain_name="x793tggs11.execute-api.us-east-1.amazonaws.com",
             body=urlencode({"admin_secret": API_KEY}),
         )
         result = lambda_handler(event, None)
 
         assert result["statusCode"] == 303
         assert result["headers"]["Location"] == "/prod/dashboard"
+
+    def test_login_removes_internal_stage_path_on_custom_domain(self):
+        from api.handler import lambda_handler
+
+        event = _event(
+            "POST",
+            "/login",
+            path="/prod/login",
+            domain_name="weasley-admin.doughty.org",
+            body=urlencode({"admin_secret": API_KEY}),
+        )
+        result = lambda_handler(event, None)
+
+        assert result["statusCode"] == 303
+        assert result["headers"]["Location"] == "/dashboard"
 
     def test_invalid_login_does_not_set_cookie(self):
         from api.handler import lambda_handler
@@ -170,6 +190,22 @@ class TestLoginFlow:
         from api.handler import lambda_handler
 
         result = lambda_handler(_event("GET", "/dashboard"), None)
+
+        assert result["statusCode"] == 303
+        assert result["headers"]["Location"] == "/login"
+
+    def test_custom_domain_redirect_does_not_expose_internal_stage(self):
+        from api.handler import lambda_handler
+
+        result = lambda_handler(
+            _event(
+                "GET",
+                "/dashboard",
+                path="/prod/dashboard",
+                domain_name="weasley-admin.doughty.org",
+            ),
+            None,
+        )
 
         assert result["statusCode"] == 303
         assert result["headers"]["Location"] == "/login"
